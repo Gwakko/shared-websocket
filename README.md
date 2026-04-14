@@ -134,35 +134,44 @@ await withSocket('wss://api.example.com/ws', {
 ## Usage — React
 
 ```tsx
-import { createSharedWebSocket, useSocketEvent, useSocketSync, useSocketStatus } from 'shared-websocket/adapters/react';
+import {
+  SharedWebSocketProvider,
+  useSharedWebSocket,
+  useSocketEvent,
+  useSocketStream,
+  useSocketSync,
+  useSocketStatus,
+} from 'shared-websocket/adapters/react';
 
-// Create instance + Provider
-const { Provider, useSocket } = createSharedWebSocket('wss://api.example.com/ws', {
-  auth: () => localStorage.getItem('token')!,
-});
-
+// Provider accepts url and options as props
 function App() {
   return (
-    <Provider>
+    <SharedWebSocketProvider
+      url="wss://api.example.com/ws"
+      options={{
+        auth: () => localStorage.getItem('token')!,
+        useWorker: true,
+      }}
+    >
       <Dashboard />
-    </Provider>
+    </SharedWebSocketProvider>
   );
 }
 
 function Dashboard() {
-  const ws = useSocket();
+  const ws = useSharedWebSocket();
 
-  // Latest event value (reactive)
-  const order = useSocketEvent<Order>(ws, 'order.created');
+  // Latest event value (reactive) — no need to pass ws, uses context
+  const order = useSocketEvent<Order>('order.created');
 
   // Accumulated stream
-  const messages = useSocketStream<Message>(ws, 'chat.message');
+  const messages = useSocketStream<Message>('chat.message');
 
-  // Synced across tabs
-  const [cart, setCart] = useSocketSync(ws, 'cart', { items: [] });
+  // Synced across tabs (no server roundtrip)
+  const [cart, setCart] = useSocketSync('cart', { items: [] });
 
   // Connection status
-  const { connected, tabRole } = useSocketStatus(ws);
+  const { connected, tabRole } = useSocketStatus();
 
   return (
     <div>
@@ -274,14 +283,17 @@ Callback receives `{ ws, signal }` — destructure what you need. Signal aborts 
 | `connected` | `boolean` | Connection status |
 | `tabRole` | `'leader' \| 'follower'` | Current tab's role |
 
-### React Hooks
+### React Hooks (React 19, uses `useEffectEvent` for stable refs)
 
 | Hook | Returns | Description |
 |------|---------|-------------|
-| `useSocketEvent<T>(ws, event)` | `T \| undefined` | Latest event value |
-| `useSocketStream<T>(ws, event)` | `T[]` | Accumulated events |
-| `useSocketSync<T>(ws, key, init)` | `[T, setter]` | Cross-tab synced state |
-| `useSocketStatus(ws)` | `{ connected, tabRole }` | Connection status |
+| `useSharedWebSocket()` | `SharedWebSocket` | Access instance from context |
+| `useSocketEvent<T>(event)` | `T \| undefined` | Latest event value |
+| `useSocketStream<T>(event)` | `T[]` | Accumulated events |
+| `useSocketSync<T>(key, init)` | `[T, setter]` | Cross-tab synced state |
+| `useSocketStatus()` | `{ connected, tabRole }` | Connection status |
+
+All hooks use context internally — no need to pass `ws` as argument.
 
 ### Vue Composables
 
