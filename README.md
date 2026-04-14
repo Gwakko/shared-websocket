@@ -331,6 +331,15 @@ Three ways to pass a token. Token is appended as a query parameter (default `?to
 Priority: `auth` callback > `authToken` static > no token.
 Default parameter name: `"token"`. Override with `authParam`.
 
+URL with existing query parameters is safe — token is appended without breaking anything (uses `URL` + `searchParams.set()`):
+```typescript
+// URL already has params — works fine
+new SharedWebSocket('wss://api.example.com/ws?room=general&lang=en', {
+  auth: () => getToken(),
+})
+// → wss://api.example.com/ws?room=general&lang=en&token=eyJhb...
+```
+
 ### Properties
 
 | Property | Type | Description |
