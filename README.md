@@ -33,6 +33,7 @@ import { SharedWebSocket } from 'shared-websocket';
 
 const ws = new SharedWebSocket('wss://api.example.com/ws', {
   auth: () => localStorage.getItem('token')!,
+  useWorker: true,  // optional: run WebSocket in Web Worker (offloads main thread)
 });
 
 await ws.connect();
@@ -250,6 +251,22 @@ function addToCart() {
 
 Callback receives `{ ws, signal }` — destructure what you need. Signal aborts when scope exits.
 
+### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `protocols` | `string[]` | `[]` | WebSocket subprotocols |
+| `reconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
+| `reconnectMaxDelay` | `number` | `30000` | Max reconnect backoff (ms) |
+| `heartbeatInterval` | `number` | `30000` | Ping interval (ms) |
+| `sendBuffer` | `number` | `100` | Max buffered messages during reconnect |
+| `auth` | `() => string` | — | JWT token provider |
+| **`useWorker`** | **`boolean`** | **`false`** | **Run WebSocket in Web Worker** |
+| `workerUrl` | `string \| URL` | — | Custom worker URL (if useWorker) |
+| `electionTimeout` | `number` | `200` | Leader election timeout (ms) |
+| `leaderHeartbeat` | `number` | `2000` | Leader heartbeat interval (ms) |
+| `leaderTimeout` | `number` | `5000` | Leader absence timeout (ms) |
+
 ### Properties
 
 | Property | Type | Description |
@@ -283,7 +300,36 @@ Callback receives `{ ws, signal }` — destructure what you need. Signal aborts 
 
 3. **Failover** — leader tab closes → `beforeunload` fires `abdicate` → followers detect missing heartbeat → election → new leader connects WebSocket → zero data loss (buffered messages replayed).
 
-4. **Resource Safety** — `Symbol.dispose` support for automatic cleanup. All timers, listeners, and channels properly cleaned up.
+4. **Resource Safety** — `withSocket()` for scoped lifecycle, `Symbol.dispose` support. All timers, listeners, and channels properly cleaned up.
+
+5. **Worker Mode** (optional) — `useWorker: true` runs WebSocket inside a Web Worker. JSON parsing, heartbeat timers, and reconnection logic run off main thread. UI stays responsive even at high message rates.
+
+## When to Use `useWorker: true`
+
+| Scenario | useWorker | Why |
+|----------|-----------|-----|
+| Chat (10-50 msgs/sec) | `false` | Low overhead, not worth Worker complexity |
+| Simple notifications | `false` | Few messages, main thread handles fine |
+| Live trading feed (100+ msgs/sec) | **`true`** | JSON parsing 100+ msgs/sec blocks rendering |
+| Real-time dashboard (50+ metrics/sec) | **`true`** | Continuous data stream, UI must stay smooth |
+| Heavy payload (>100KB per message) | **`true`** | Parsing large JSON blocks main thread |
+| Complex UI (React with 10k+ rows) | **`true`** | Main thread already busy, any extra work causes jank |
+| Mobile / low-end devices | **`true`** | Less CPU available, offloading helps |
+| Simple landing page | `false` | Minimal UI, no rendering pressure |
+| SSR / Node.js | `false` | Workers are browser-only |
+| Debugging | `false` | Worker DevTools is less convenient |
+
+**Rule of thumb:** If your app drops frames when WebSocket messages arrive — add `useWorker: true`.
+
+```typescript
+// Without worker (default) — WebSocket in main thread
+const ws = new SharedWebSocket(url);
+
+// With worker — WebSocket in Web Worker
+const ws = new SharedWebSocket(url, { useWorker: true });
+
+// API is identical — only internal transport changes
+```
 
 ## Browser Support
 

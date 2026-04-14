@@ -3,8 +3,20 @@ import { generateId } from './utils/id';
 import { MessageBus } from './MessageBus';
 import { TabCoordinator } from './TabCoordinator';
 import { SharedSocket } from './SharedSocket';
+import { WorkerSocket } from './WorkerSocket';
 import { SubscriptionManager } from './SubscriptionManager';
 import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler } from './types';
+
+/** Common interface for both SharedSocket and WorkerSocket. */
+interface SocketAdapter {
+  readonly state: string;
+  connect(): void;
+  send(data: unknown): void;
+  disconnect(): void;
+  onMessage(fn: EventHandler): Unsubscribe;
+  onStateChange(fn: (state: string) => void): Unsubscribe;
+  [Symbol.dispose](): void;
+}
 
 /**
  * SharedWebSocket — shares ONE WebSocket connection across browser tabs.
@@ -16,7 +28,7 @@ import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler } from 
 export class SharedWebSocket implements Disposable {
   private bus: MessageBus;
   private coordinator: TabCoordinator;
-  private socket: SharedSocket | null = null;
+  private socket: SocketAdapter | null = null;
   private subs = new SubscriptionManager();
   private syncStore = new Map<string, unknown>();
   private tabId: string;
@@ -134,14 +146,32 @@ export class SharedWebSocket implements Disposable {
     this[Symbol.dispose]();
   }
 
-  private onBecomeLeader(): void {
-    this.socket = new SharedSocket(this.url, {
+  private createSocket(): SocketAdapter {
+    const socketOptions = {
       protocols: this.options.protocols,
       reconnect: this.options.reconnect,
       reconnectMaxDelay: this.options.reconnectMaxDelay,
       heartbeatInterval: this.options.heartbeatInterval,
+      sendBuffer: this.options.sendBuffer,
+    };
+
+    if (this.options.useWorker) {
+      // WebSocket runs in a Web Worker — main thread stays free
+      return new WorkerSocket(this.url, {
+        ...socketOptions,
+        workerUrl: this.options.workerUrl,
+      });
+    }
+
+    // WebSocket runs in main thread (default)
+    return new SharedSocket(this.url, {
+      ...socketOptions,
       auth: this.options.auth,
     });
+  }
+
+  private onBecomeLeader(): void {
+    this.socket = this.createSocket();
 
     this.socket.onMessage((data: any) => {
       const event = data?.event ?? 'message';

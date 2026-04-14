@@ -22,4 +22,8 @@ export interface SharedWebSocketOptions {
   leaderTimeout?: number;
   sendBuffer?: number;
   auth?: () => string | Promise<string>;
+  /** Run WebSocket inside a Web Worker (offloads JSON parsing, heartbeat from main thread). */
+  useWorker?: boolean;
+  /** Custom worker URL (if useWorker is true and you want to provide your own worker file). */
+  workerUrl?: string | URL;
 }
