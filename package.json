@@ -1,5 +1,5 @@
 {
-  "name": "shared-websocket",
+  "name": "@gwakko/shared-websocket",
   "version": "0.1.0",
   "description": "Share ONE WebSocket connection across browser tabs — leader election, BroadcastChannel sync, optional Web Worker",
   "type": "module",

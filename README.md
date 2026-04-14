@@ -25,7 +25,7 @@ Tab 1 (Leader)        Tab 2 (Follower)      Tab 3 (Follower)
 ### From npm
 
 ```bash
-npm install shared-websocket
+npm install @gwakko/shared-websocket
 ```
 
 ### From GitHub (latest source)
@@ -54,7 +54,7 @@ npm run build   # outputs ESM + CJS + types to dist/
 ## Usage — Vanilla TypeScript
 
 ```typescript
-import { SharedWebSocket } from 'shared-websocket';
+import { SharedWebSocket } from '@gwakko/shared-websocket';
 
 const ws = new SharedWebSocket('wss://api.example.com/ws', {
   auth: () => localStorage.getItem('token')!,
@@ -89,7 +89,7 @@ ws.disconnect();
 Auto-creates, connects, and disposes. Guarantees cleanup even on errors.
 
 ```typescript
-import { withSocket } from 'shared-websocket';
+import { withSocket } from '@gwakko/shared-websocket';
 
 // Basic
 await withSocket('wss://api.example.com/ws', async ({ ws }) => {
@@ -166,7 +166,7 @@ import {
   useSocketStream,
   useSocketSync,
   useSocketStatus,
-} from 'shared-websocket/adapters/react';
+} from '@gwakko/shared-websocket/react';
 
 // Provider accepts url and options as props
 function App() {
@@ -217,7 +217,7 @@ function Dashboard() {
 <!-- main.ts -->
 <script setup>
 import { createApp } from 'vue';
-import { createSharedWebSocketPlugin } from 'shared-websocket/adapters/vue';
+import { createSharedWebSocketPlugin } from '@gwakko/shared-websocket/vue';
 import App from './App.vue';
 
 const app = createApp(App);
@@ -235,7 +235,7 @@ import {
   useSocketStream,
   useSocketSync,
   useSocketStatus,
-} from 'shared-websocket/adapters/vue';
+} from '@gwakko/shared-websocket/vue';
 
 const ws = useSharedWebSocket();
 
