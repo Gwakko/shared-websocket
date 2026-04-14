@@ -308,17 +308,45 @@ Callback receives `{ ws, signal }` — destructure what you need. Signal aborts 
 | `connected` | `boolean` | Connection status |
 | `tabRole` | `'leader' \| 'follower'` | Current tab's role |
 
-### React Hooks (React 19, uses `useEffectEvent` for stable refs)
+### React Hooks (React 19, `useEffectEvent` for stable refs)
 
-| Hook | Returns | Description |
-|------|---------|-------------|
-| `useSharedWebSocket()` | `SharedWebSocket` | Access instance from context |
-| `useSocketEvent<T>(event)` | `T \| undefined` | Latest event value |
-| `useSocketStream<T>(event)` | `T[]` | Accumulated events |
-| `useSocketSync<T>(key, init)` | `[T, setter]` | Cross-tab synced state |
-| `useSocketStatus()` | `{ connected, tabRole }` | Connection status |
+All hooks use context internally — no need to pass `ws`. Every hook accepts an **optional callback** for custom handling.
 
-All hooks use context internally — no need to pass `ws` as argument.
+| Hook | Without callback | With callback |
+|------|-----------------|---------------|
+| `useSharedWebSocket()` | `SharedWebSocket` | — |
+| `useSocketEvent<T>(event, cb?)` | Returns `T \| undefined` | `cb(data)` on each event |
+| `useSocketStream<T>(event, cb?)` | Returns `T[]` (accumulated) | `cb(data)` — manage your own state |
+| `useSocketSync<T>(key, init, cb?)` | Returns `[T, setter]` | `cb(value)` — side effects on sync |
+| `useSocketCallback<T>(event, cb)` | — | Fire-and-forget (no state) |
+| `useSocketStatus()` | `{ connected, tabRole }` | — |
+
+```tsx
+// Without callback — reactive state
+const order = useSocketEvent<Order>('order.created');
+
+// With callback — custom logic, stable ref
+useSocketEvent<Order>('order.created', (order) => {
+  playSound('new-order');
+  analytics.track('order_received', order);
+});
+
+// Stream with limit
+const [msgs, setMsgs] = useState<Message[]>([]);
+useSocketStream<Message>('chat.message', (msg) => {
+  setMsgs(prev => [msg, ...prev].slice(0, 50));
+});
+
+// Sync with side effect
+const [cart, setCart] = useSocketSync('cart', { items: [] }, (cart) => {
+  document.title = `Cart (${cart.items.length})`;
+});
+
+// Fire-and-forget
+useSocketCallback<Notification>('notification', (n) => {
+  if (ws.tabRole === 'leader') new Notification(n.title);
+});
+```
 
 ### Vue Composables
 
