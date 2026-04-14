@@ -80,7 +80,45 @@ await withSocket('wss://api.example.com/ws', {
   }
 });
 
-// With external cancellation
+// Tab-to-tab sync via BroadcastChannel (no server roundtrip)
+await withSocket('wss://api.example.com/ws', async ({ ws }) => {
+  // Send state to ALL tabs instantly
+  ws.sync('cart', { items: [1, 2, 3] });
+  ws.sync('theme', 'dark');
+  ws.sync('locale', 'en');
+
+  // Read synced state from other tabs
+  const cart = ws.getSync<Cart>('cart');  // { items: [1, 2, 3] }
+
+  // React to changes from other tabs
+  ws.onSync('cart', (cart) => {
+    updateCartBadge(cart.items.length);
+  });
+
+  ws.onSync('theme', (theme) => {
+    document.documentElement.setAttribute('data-theme', theme);
+  });
+});
+
+// Combine: server events + tab sync
+await withSocket('wss://api.example.com/ws', {
+  auth: () => localStorage.getItem('token')!,
+}, async ({ ws, signal }) => {
+  // Server events → update state → sync to all tabs
+  ws.on('order.status', (order) => {
+    ws.sync('activeOrder', order);  // all tabs see the update
+  });
+
+  // One tab adds to cart → all tabs update
+  ws.onSync('cart', (cart) => renderCart(cart));
+
+  // Stream server messages with auto-cleanup
+  for await (const msg of ws.stream('chat.messages', signal)) {
+    renderMessage(msg);
+  }
+});
+
+// With external cancellation (AbortController)
 const controller = new AbortController();
 setTimeout(() => controller.abort(), 30_000);
 
