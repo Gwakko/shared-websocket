@@ -20,7 +20,10 @@ export const SharedWebSocketKey: InjectionKey<SharedWebSocket> = Symbol('SharedW
  *
  * @example
  * const app = createApp(App);
- * app.use(createSharedWebSocketPlugin('wss://api.example.com/ws'));
+ * app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
+ *   auth: () => localStorage.getItem('token')!,
+ *   useWorker: true,
+ * }));
  */
 export function createSharedWebSocketPlugin(url: string, options?: SharedWebSocketOptions) {
   return {
@@ -29,7 +32,6 @@ export function createSharedWebSocketPlugin(url: string, options?: SharedWebSock
       socket.connect();
       app.provide(SharedWebSocketKey, socket);
 
-      // Cleanup on app unmount
       const originalUnmount = app.unmount.bind(app);
       app.unmount = () => {
         socket[Symbol.dispose]();
@@ -44,6 +46,7 @@ export function createSharedWebSocketPlugin(url: string, options?: SharedWebSock
  *
  * @example
  * const ws = useSharedWebSocket();
+ * ws.send('chat.message', { text: 'Hello' });
  */
 export function useSharedWebSocket(): SharedWebSocket {
   const socket = inject(SharedWebSocketKey);
@@ -56,17 +59,31 @@ export function useSharedWebSocket(): SharedWebSocket {
 // ─── Composables ─────────────────────────────────────────
 
 /**
- * Subscribe to a WebSocket event. Returns reactive ref with latest value.
+ * Subscribe to a WebSocket event.
+ * - Without callback: returns reactive ref with latest value.
+ * - With callback: calls your handler on each event.
  *
  * @example
+ * // Reactive state
  * const order = useSocketEvent<Order>('order.created');
+ *
+ * @example
+ * // Custom callback
+ * useSocketEvent<Order>('order.created', (order) => {
+ *   playSound('new-order');
+ *   analytics.track('order_received', order);
+ * });
  */
-export function useSocketEvent<T>(event: string): Ref<T | undefined> {
+export function useSocketEvent<T>(event: string, callback?: (data: T) => void): Ref<T | undefined> {
   const socket = useSharedWebSocket();
   const value = ref<T | undefined>(undefined) as Ref<T | undefined>;
 
   const unsub = socket.on(event, (data: T) => {
-    value.value = data;
+    if (callback) {
+      callback(data);
+    } else {
+      value.value = data;
+    }
   });
 
   onUnmounted(unsub);
@@ -74,17 +91,38 @@ export function useSocketEvent<T>(event: string): Ref<T | undefined> {
 }
 
 /**
- * Accumulate WebSocket events into reactive array.
+ * Accumulate WebSocket events.
+ * - Without callback: returns reactive array.
+ * - With callback: calls your handler — manage your own state.
  *
  * @example
+ * // Default accumulation
  * const messages = useSocketStream<ChatMessage>('chat.message');
+ *
+ * @example
+ * // Custom — keep last 50
+ * const messages = ref<ChatMessage[]>([]);
+ * useSocketStream<ChatMessage>('chat.message', (msg) => {
+ *   messages.value = [msg, ...messages.value].slice(0, 50);
+ * });
+ *
+ * @example
+ * // Custom — filter by type
+ * const errors = ref<LogEntry[]>([]);
+ * useSocketStream<LogEntry>('log.entry', (entry) => {
+ *   if (entry.level === 'error') errors.value = [...errors.value, entry];
+ * });
  */
-export function useSocketStream<T>(event: string): Ref<T[]> {
+export function useSocketStream<T>(event: string, callback?: (data: T) => void): Ref<T[]> {
   const socket = useSharedWebSocket();
   const items = ref<T[]>([]) as Ref<T[]>;
 
   const unsub = socket.on(event, (data: T) => {
-    items.value = [...items.value, data];
+    if (callback) {
+      callback(data);
+    } else {
+      items.value = [...items.value, data];
+    }
   });
 
   onUnmounted(unsub);
@@ -92,21 +130,31 @@ export function useSocketStream<T>(event: string): Ref<T[]> {
 }
 
 /**
- * Two-way state sync across browser tabs via reactive ref.
+ * Two-way state sync across browser tabs.
+ * - Without callback: reactive ref synced across tabs.
+ * - With callback: called when any tab updates this key — side effects.
  *
  * @example
+ * // Reactive two-way sync
  * const cart = useSocketSync<Cart>('cart', { items: [] });
  * cart.value = { items: [1, 2, 3] }; // syncs to all tabs
+ *
+ * @example
+ * // With side effect callback
+ * const cart = useSocketSync<Cart>('cart', { items: [] }, (cart) => {
+ *   document.title = `Cart (${cart.items.length})`;
+ *   analytics.track('cart_updated');
+ * });
  */
-export function useSocketSync<T>(key: string, initialValue: T): Ref<T> {
+export function useSocketSync<T>(key: string, initialValue: T, callback?: (value: T) => void): Ref<T> {
   const socket = useSharedWebSocket();
   const value = ref<T>(socket.getSync<T>(key) ?? initialValue) as Ref<T>;
 
   const unsub = socket.onSync<T>(key, (v) => {
     value.value = v;
+    callback?.(v);
   });
 
-  // Watch for local changes → sync to other tabs
   watch(
     value,
     (newVal) => {
@@ -117,6 +165,24 @@ export function useSocketSync<T>(key: string, initialValue: T): Ref<T> {
 
   onUnmounted(unsub);
   return value;
+}
+
+/**
+ * Fire-and-forget event handler — no state, no ref.
+ *
+ * @example
+ * useSocketCallback<Notification>('notification', (n) => {
+ *   showToast(n.title);
+ * });
+ */
+export function useSocketCallback<T>(event: string, callback: (data: T) => void): void {
+  const socket = useSharedWebSocket();
+
+  const unsub = socket.on(event, (data: T) => {
+    callback(data);
+  });
+
+  onUnmounted(unsub);
 }
 
 /**
@@ -133,9 +199,7 @@ export function useSocketStatus(): {
   const connected = ref(socket.connected);
   const tabRole = ref<TabRole>(socket.tabRole);
 
-  let timer: ReturnType<typeof setInterval>;
-
-  timer = setInterval(() => {
+  const timer = setInterval(() => {
     connected.value = socket.connected;
     tabRole.value = socket.tabRole;
   }, 1000);

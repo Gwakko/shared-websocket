@@ -350,12 +350,16 @@ useSocketCallback<Notification>('notification', (n) => {
 
 ### Vue Composables
 
-| Composable | Returns | Description |
-|-----------|---------|-------------|
-| `useSocketEvent<T>(event)` | `Ref<T>` | Latest event value |
-| `useSocketStream<T>(event)` | `Ref<T[]>` | Accumulated events |
-| `useSocketSync<T>(key, init)` | `Ref<T>` | Cross-tab synced state (two-way) |
-| `useSocketStatus()` | `{ connected, tabRole }` | Reactive connection status |
+All composables accept an **optional callback** — same pattern as React hooks.
+
+| Composable | Without callback | With callback |
+|-----------|-----------------|---------------|
+| `useSharedWebSocket()` | `SharedWebSocket` | — |
+| `useSocketEvent<T>(event, cb?)` | `Ref<T>` | `cb(data)` on each event |
+| `useSocketStream<T>(event, cb?)` | `Ref<T[]>` | `cb(data)` — manage your own ref |
+| `useSocketSync<T>(key, init, cb?)` | `Ref<T>` (two-way) | `cb(value)` — side effects on sync |
+| `useSocketCallback<T>(event, cb)` | — | Fire-and-forget |
+| `useSocketStatus()` | `{ connected, tabRole }` | — |
 
 ## How It Works
 
