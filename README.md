@@ -56,20 +56,10 @@ npm run build   # outputs ESM + CJS + types to dist/
 ```typescript
 import { SharedWebSocket } from '@gwakko/shared-websocket';
 
-// Auth option 1: callback (called on each connect/reconnect — always fresh token)
 const ws = new SharedWebSocket('wss://api.example.com/ws', {
-  auth: () => localStorage.getItem('token')!,
-});
-
-// Auth option 2: static token
-const ws2 = new SharedWebSocket('wss://api.example.com/ws', {
-  authToken: 'eyJhbGciOiJIUzI1NiIs...',
-});
-
-// Auth option 3: custom parameter name → wss://...?access_token=xxx
-const ws3 = new SharedWebSocket('wss://api.example.com/ws', {
-  auth: () => getToken(),
-  authParam: 'access_token',
+  auth: () => localStorage.getItem('token')!,  // or authToken: 'static-token'
+  authParam: 'token',  // default — query param name (?token=xxx)
+  useWorker: true,     // optional — offload WebSocket to Web Worker
 });
 
 await ws.connect();
@@ -232,7 +222,10 @@ import { createSharedWebSocketPlugin } from '@gwakko/shared-websocket/vue';
 import App from './App.vue';
 
 const app = createApp(App);
-app.use(createSharedWebSocketPlugin('wss://api.example.com/ws'));
+app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
+  auth: () => localStorage.getItem('token')!,
+  useWorker: true,
+}));
 app.mount('#app');
 </script>
 ```
@@ -313,6 +306,30 @@ Callback receives `{ ws, signal }` — destructure what you need. Signal aborts 
 | `electionTimeout` | `number` | `200` | Leader election timeout (ms) |
 | `leaderHeartbeat` | `number` | `2000` | Leader heartbeat interval (ms) |
 | `leaderTimeout` | `number` | `5000` | Leader absence timeout (ms) |
+
+### Authentication
+
+Three ways to pass a token. Token is appended as a query parameter (default `?token=xxx`):
+
+```typescript
+// 1. Callback — fresh token on every connect/reconnect
+{ auth: () => localStorage.getItem('token')! }
+// → wss://api.example.com/ws?token=eyJhb...
+
+// 2. Static token — simple, no callback
+{ authToken: 'eyJhbGciOiJIUzI1NiIs...' }
+// → wss://api.example.com/ws?token=eyJhb...
+
+// 3. Custom parameter name
+{ auth: () => getToken(), authParam: 'access_token' }
+// → wss://api.example.com/ws?access_token=eyJhb...
+
+// 4. No auth
+{}  // connects without token
+```
+
+Priority: `auth` callback > `authToken` static > no token.
+Default parameter name: `"token"`. Override with `authParam`.
 
 ### Properties
 
