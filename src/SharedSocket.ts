@@ -9,6 +9,8 @@ interface SharedSocketOptions {
   heartbeatInterval?: number;
   sendBuffer?: number;
   auth?: () => string | Promise<string>;
+  authToken?: string;
+  authParam?: string;
 }
 
 export class SharedSocket implements Disposable {
@@ -22,7 +24,11 @@ export class SharedSocket implements Disposable {
   private onMessageFns = new Set<EventHandler>();
   private onStateChangeFns = new Set<(state: SocketState) => void>();
 
-  private readonly opts: Required<Omit<SharedSocketOptions, 'auth'>> & { auth?: () => string | Promise<string> };
+  private readonly opts: Required<Omit<SharedSocketOptions, 'auth' | 'authToken' | 'authParam'>> & {
+    auth?: () => string | Promise<string>;
+    authToken?: string;
+    authParam: string;
+  };
 
   constructor(
     private url: string,
@@ -35,6 +41,8 @@ export class SharedSocket implements Disposable {
       heartbeatInterval: options.heartbeatInterval ?? 30_000,
       sendBuffer: options.sendBuffer ?? 100,
       auth: options.auth,
+      authToken: options.authToken,
+      authParam: options.authParam ?? 'token',
     };
   }
 
@@ -47,13 +55,7 @@ export class SharedSocket implements Disposable {
 
     this.setState('connecting');
 
-    let connectUrl = this.url;
-    if (this.opts.auth) {
-      const token = await this.opts.auth();
-      const sep = connectUrl.includes('?') ? '&' : '?';
-      connectUrl = `${connectUrl}${sep}token=${encodeURIComponent(token)}`;
-    }
-
+    const connectUrl = await this.buildUrl();
     this.ws = new WebSocket(connectUrl, this.opts.protocols);
 
     this.ws.onopen = () => {
@@ -167,6 +169,26 @@ export class SharedSocket implements Disposable {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+  }
+
+  private async buildUrl(): Promise<string> {
+    // Resolve token: callback > static > none
+    let token: string | undefined;
+    if (this.opts.auth) {
+      token = await this.opts.auth();
+    } else if (this.opts.authToken) {
+      token = this.opts.authToken;
+    }
+
+    if (!token) return this.url;
+
+    // WebSocket URLs (ws://, wss://) are not fully supported by URL API.
+    // Convert to http(s) for parsing, then back to ws(s).
+    const httpUrl = this.url.replace(/^ws(s?):\/\//, 'http$1://');
+    const parsed = new URL(httpUrl);
+    parsed.searchParams.set(this.opts.authParam, token);
+
+    return parsed.toString().replace(/^http(s?):\/\//, 'ws$1://');
   }
 
   private setState(state: SocketState): void {

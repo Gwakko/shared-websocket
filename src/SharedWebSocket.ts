@@ -167,6 +167,8 @@ export class SharedWebSocket implements Disposable {
     return new SharedSocket(this.url, {
       ...socketOptions,
       auth: this.options.auth,
+      authToken: this.options.authToken,
+      authParam: this.options.authParam,
     });
   }
 

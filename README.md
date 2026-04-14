@@ -56,9 +56,20 @@ npm run build   # outputs ESM + CJS + types to dist/
 ```typescript
 import { SharedWebSocket } from '@gwakko/shared-websocket';
 
+// Auth option 1: callback (called on each connect/reconnect — always fresh token)
 const ws = new SharedWebSocket('wss://api.example.com/ws', {
   auth: () => localStorage.getItem('token')!,
-  useWorker: true,  // optional: run WebSocket in Web Worker (offloads main thread)
+});
+
+// Auth option 2: static token
+const ws2 = new SharedWebSocket('wss://api.example.com/ws', {
+  authToken: 'eyJhbGciOiJIUzI1NiIs...',
+});
+
+// Auth option 3: custom parameter name → wss://...?access_token=xxx
+const ws3 = new SharedWebSocket('wss://api.example.com/ws', {
+  auth: () => getToken(),
+  authParam: 'access_token',
 });
 
 await ws.connect();
@@ -294,7 +305,9 @@ Callback receives `{ ws, signal }` — destructure what you need. Signal aborts 
 | `reconnectMaxDelay` | `number` | `30000` | Max reconnect backoff (ms) |
 | `heartbeatInterval` | `number` | `30000` | Ping interval (ms) |
 | `sendBuffer` | `number` | `100` | Max buffered messages during reconnect |
-| `auth` | `() => string` | — | JWT token provider |
+| `auth` | `() => string` | — | Token provider callback (called on each connect) |
+| `authToken` | `string` | — | Static token (alternative to `auth` callback) |
+| `authParam` | `string` | `"token"` | Query parameter name for token |
 | **`useWorker`** | **`boolean`** | **`false`** | **Run WebSocket in Web Worker** |
 | `workerUrl` | `string \| URL` | — | Custom worker URL (if useWorker) |
 | `electionTimeout` | `number` | `200` | Leader election timeout (ms) |

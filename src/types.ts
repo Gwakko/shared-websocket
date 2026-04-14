@@ -21,7 +21,12 @@ export interface SharedWebSocketOptions {
   leaderHeartbeat?: number;
   leaderTimeout?: number;
   sendBuffer?: number;
+  /** Auth token provider — called before each connect/reconnect. */
   auth?: () => string | Promise<string>;
+  /** Static auth token (alternative to auth callback). */
+  authToken?: string;
+  /** Query parameter name for the token (default: "token"). */
+  authParam?: string;
   /** Run WebSocket inside a Web Worker (offloads JSON parsing, heartbeat from main thread). */
   useWorker?: boolean;
   /** Custom worker URL (if useWorker is true and you want to provide your own worker file). */
