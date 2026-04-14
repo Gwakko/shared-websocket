@@ -80,18 +80,38 @@ export function useSharedWebSocket(): SharedWebSocket {
 // ─── Hooks ───────────────────────────────────────────────
 
 /**
- * Subscribe to a WebSocket event. Returns the latest received value.
- * Uses useEffectEvent for a stable callback ref — no stale closures.
+ * Subscribe to a WebSocket event.
+ * - Without callback: returns the latest received value (reactive state).
+ * - With callback: calls your handler on each event (stable ref via useEffectEvent).
  *
  * @example
+ * // Reactive state — returns latest value
  * const order = useSocketEvent<Order>('order.created');
+ *
+ * @example
+ * // Custom callback — full control, no state
+ * useSocketEvent<Order>('order.created', (order) => {
+ *   playSound('new-order');
+ *   analytics.track('order_received', order);
+ * });
+ *
+ * @example
+ * // Custom callback with transform — store in your own state
+ * const [orders, setOrders] = useState<Order[]>([]);
+ * useSocketEvent<Order>('order.created', (order) => {
+ *   setOrders(prev => [order, ...prev].slice(0, 50)); // keep last 50
+ * });
  */
-export function useSocketEvent<T>(event: string): T | undefined {
+export function useSocketEvent<T>(event: string, callback?: (data: T) => void): T | undefined {
   const socket = useSharedWebSocket();
   const [value, setValue] = useState<T | undefined>(undefined);
 
   const onEvent = useEffectEvent((data: T) => {
-    setValue(data);
+    if (callback) {
+      callback(data);
+    } else {
+      setValue(data);
+    }
   });
 
   useEffect(() => {
@@ -99,7 +119,7 @@ export function useSocketEvent<T>(event: string): T | undefined {
     return unsub;
   }, [socket, event]);
 
-  return value;
+  return callback ? undefined : value;
 }
 
 /**
@@ -158,6 +178,38 @@ export function useSocketSync<T>(
   });
 
   return [value, setAndSync];
+}
+
+/**
+ * Subscribe to a WebSocket event with just a callback — no state, no return value.
+ * Fire-and-forget: side effects, logging, analytics, sounds, browser notifications.
+ * Stable ref via useEffectEvent — callback always sees latest closure values.
+ *
+ * @example
+ * useSocketCallback<Order>('order.created', (order) => {
+ *   playSound('new-order');
+ *   analytics.track('order_received', { id: order.id });
+ * });
+ *
+ * @example
+ * // Browser notification only from leader tab
+ * useSocketCallback<Notification>('notification', (notif) => {
+ *   if (ws.tabRole === 'leader' && document.hidden) {
+ *     new Notification(notif.title, { body: notif.body });
+ *   }
+ * });
+ */
+export function useSocketCallback<T>(event: string, callback: (data: T) => void): void {
+  const socket = useSharedWebSocket();
+
+  const handler = useEffectEvent((data: T) => {
+    callback(data);
+  });
+
+  useEffect(() => {
+    const unsub = socket.on(event, handler);
+    return unsub;
+  }, [socket, event]);
 }
 
 /**
