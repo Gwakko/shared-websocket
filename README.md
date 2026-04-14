@@ -55,9 +55,41 @@ ws.sync('cart', { items: [1, 2, 3] });
 ws.onSync('cart', (cart) => console.log('Cart updated:', cart));
 
 // Cleanup
-ws[Symbol.dispose]();
-// or with `using`:
-// using ws = new SharedWebSocket(url);
+ws.disconnect();
+```
+
+### Scoped Lifecycle — `withSocket()`
+
+Auto-creates, connects, and disposes. Guarantees cleanup even on errors.
+
+```typescript
+import { withSocket } from 'shared-websocket';
+
+// Basic
+await withSocket('wss://api.example.com/ws', async ({ ws }) => {
+  ws.on('order.created', (order) => console.log(order));
+  await longRunningWork();
+}); // auto-disposed here
+
+// With auth
+await withSocket('wss://api.example.com/ws', {
+  auth: () => localStorage.getItem('token')!,
+}, async ({ ws, signal }) => {
+  for await (const msg of ws.stream('chat.messages', signal)) {
+    renderMessage(msg);
+  }
+});
+
+// With external cancellation
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 30_000);
+
+await withSocket('wss://api.example.com/ws', {
+  signal: controller.signal,
+}, async ({ ws, signal }) => {
+  ws.on('notifications', showToast);
+  await new Promise((_, reject) => signal.addEventListener('abort', reject));
+});
 ```
 
 ## Usage — React
@@ -169,7 +201,16 @@ function addToCart() {
 | `getSync(key)` | Get synced value |
 | `onSync(key, fn)` | Listen for sync changes |
 | `disconnect()` | Close connection and cleanup |
-| `[Symbol.dispose]()` | Automatic cleanup with `using` |
+| `[Symbol.dispose]()` | Cleanup (also called by `disconnect`) |
+
+### withSocket()
+
+| Signature | Description |
+|-----------|-------------|
+| `withSocket(url, callback)` | Scoped lifecycle, auto-dispose |
+| `withSocket(url, options, callback)` | With auth, signal, etc. |
+
+Callback receives `{ ws, signal }` — destructure what you need. Signal aborts when scope exits.
 
 ### Properties
 
