@@ -2,82 +2,100 @@ import {
   createContext,
   useContext,
   useEffect,
-  useRef,
   useState,
-  useCallback,
+  useEffectEvent,
   type ReactNode,
   createElement,
 } from 'react';
 import { SharedWebSocket } from '../SharedWebSocket';
-import type { SharedWebSocketOptions, TabRole, Unsubscribe } from '../types';
+import type { SharedWebSocketOptions, TabRole } from '../types';
 
 // ─── Context ─────────────────────────────────────────────
 
 const SharedWSContext = createContext<SharedWebSocket | null>(null);
 
-interface ProviderProps {
+/**
+ * Provider props — pass URL and options as props for flexibility.
+ *
+ * @example
+ * <SharedWebSocketProvider url="wss://api.example.com/ws" options={{ auth: getToken }}>
+ *   <App />
+ * </SharedWebSocketProvider>
+ */
+export interface SharedWebSocketProviderProps {
+  url: string;
+  options?: SharedWebSocketOptions;
   children: ReactNode;
 }
 
 /**
- * Creates a SharedWebSocket instance with Provider and hook.
+ * Provider component — creates SharedWebSocket from props, auto-disposes on unmount.
  *
  * @example
- * const { Provider, useSocket } = createSharedWebSocket('wss://api.example.com/ws');
- *
  * function App() {
- *   return <Provider><MyComponent /></Provider>;
- * }
- *
- * function MyComponent() {
- *   const ws = useSocket();
- *   // ...
+ *   return (
+ *     <SharedWebSocketProvider
+ *       url="wss://api.example.com/ws"
+ *       options={{
+ *         auth: () => localStorage.getItem('token')!,
+ *         useWorker: true,
+ *       }}
+ *     >
+ *       <Dashboard />
+ *     </SharedWebSocketProvider>
+ *   );
  * }
  */
-export function createSharedWebSocket(url: string, options?: SharedWebSocketOptions) {
-  let instance: SharedWebSocket | null = null;
+export function SharedWebSocketProvider({ url, options, children }: SharedWebSocketProviderProps) {
+  const [socket] = useState(() => {
+    const ws = new SharedWebSocket(url, options);
+    ws.connect();
+    return ws;
+  });
 
-  function Provider({ children }: ProviderProps) {
-    const [socket] = useState(() => {
-      if (!instance) {
-        instance = new SharedWebSocket(url, options);
-        instance.connect();
-      }
-      return instance;
-    });
+  useEffect(() => {
+    return () => {
+      socket[Symbol.dispose]();
+    };
+  }, [socket]);
 
-    useEffect(() => {
-      return () => {
-        socket[Symbol.dispose]();
-        instance = null;
-      };
-    }, [socket]);
+  return createElement(SharedWSContext.Provider, { value: socket }, children);
+}
 
-    return createElement(SharedWSContext.Provider, { value: socket }, children);
+/**
+ * Access the SharedWebSocket instance from context.
+ *
+ * @example
+ * const ws = useSharedWebSocket();
+ * ws.send('chat.message', { text: 'Hello' });
+ */
+export function useSharedWebSocket(): SharedWebSocket {
+  const ctx = useContext(SharedWSContext);
+  if (!ctx) {
+    throw new Error('useSharedWebSocket must be used within <SharedWebSocketProvider>');
   }
-
-  function useSocket(): SharedWebSocket {
-    const ctx = useContext(SharedWSContext);
-    if (!ctx) throw new Error('useSocket must be used within SharedWebSocket Provider');
-    return ctx;
-  }
-
-  return { Provider, useSocket };
+  return ctx;
 }
 
 // ─── Hooks ───────────────────────────────────────────────
 
 /**
  * Subscribe to a WebSocket event. Returns the latest received value.
+ * Uses useEffectEvent for a stable callback ref — no stale closures.
  *
  * @example
- * const order = useSocketEvent<Order>(ws, 'order.created');
+ * const order = useSocketEvent<Order>('order.created');
  */
-export function useSocketEvent<T>(socket: SharedWebSocket, event: string): T | undefined {
+export function useSocketEvent<T>(event: string): T | undefined {
+  const socket = useSharedWebSocket();
   const [value, setValue] = useState<T | undefined>(undefined);
 
+  const onEvent = useEffectEvent((data: T) => {
+    setValue(data);
+  });
+
   useEffect(() => {
-    const unsub = socket.on(event, (data: T) => setValue(data));
+    const unsub = socket.on(event, onEvent);
     return unsub;
   }, [socket, event]);
 
@@ -86,18 +104,22 @@ export function useSocketEvent<T>(socket: SharedWebSocket, event: string): T | u
 
 /**
  * Accumulate WebSocket events into an array.
+ * Uses useEffectEvent — handler always sees latest state without re-subscribing.
  *
  * @example
- * const messages = useSocketStream<ChatMessage>(ws, 'chat.message');
+ * const messages = useSocketStream<ChatMessage>('chat.message');
  */
-export function useSocketStream<T>(socket: SharedWebSocket, event: string): T[] {
+export function useSocketStream<T>(event: string): T[] {
+  const socket = useSharedWebSocket();
   const [items, setItems] = useState<T[]>([]);
+
+  const onEvent = useEffectEvent((data: T) => {
+    setItems((prev) => [...prev, data]);
+  });
 
   useEffect(() => {
     setItems([]);
-    const unsub = socket.on(event, (data: T) => {
-      setItems((prev) => [...prev, data]);
-    });
+    const unsub = socket.on(event, onEvent);
     return unsub;
   }, [socket, event]);
 
@@ -106,54 +128,60 @@ export function useSocketStream<T>(socket: SharedWebSocket, event: string): T[] 
 
 /**
  * Two-way state sync across browser tabs.
+ * Uses useEffectEvent for stable sync callback.
  *
  * @example
- * const [cart, setCart] = useSocketSync<Cart>(ws, 'cart', { items: [] });
+ * const [cart, setCart] = useSocketSync<Cart>('cart', { items: [] });
  * // setCart in one tab → updates all tabs instantly
  */
 export function useSocketSync<T>(
-  socket: SharedWebSocket,
   key: string,
   initialValue: T,
 ): [T, (value: T) => void] {
+  const socket = useSharedWebSocket();
   const [value, setValue] = useState<T>(() => {
     return socket.getSync<T>(key) ?? initialValue;
   });
 
+  const onSync = useEffectEvent((synced: T) => {
+    setValue(synced);
+  });
+
   useEffect(() => {
-    const unsub = socket.onSync<T>(key, setValue);
+    const unsub = socket.onSync<T>(key, onSync);
     return unsub;
   }, [socket, key]);
 
-  const setAndSync = useCallback(
-    (newValue: T) => {
-      setValue(newValue);
-      socket.sync(key, newValue);
-    },
-    [socket, key],
-  );
+  const setAndSync = useEffectEvent((newValue: T) => {
+    setValue(newValue);
+    socket.sync(key, newValue);
+  });
 
   return [value, setAndSync];
 }
 
 /**
  * Reactive connection status.
+ * Uses useEffectEvent to avoid re-creating interval on state change.
  *
  * @example
- * const { connected, tabRole } = useSocketStatus(ws);
+ * const { connected, tabRole } = useSocketStatus();
  */
-export function useSocketStatus(socket: SharedWebSocket): {
+export function useSocketStatus(): {
   connected: boolean;
   tabRole: TabRole;
 } {
+  const socket = useSharedWebSocket();
   const [connected, setConnected] = useState(socket.connected);
   const [tabRole, setTabRole] = useState<TabRole>(socket.tabRole);
 
+  const tick = useEffectEvent(() => {
+    setConnected(socket.connected);
+    setTabRole(socket.tabRole);
+  });
+
   useEffect(() => {
-    const interval = setInterval(() => {
-      setConnected(socket.connected);
-      setTabRole(socket.tabRole);
-    }, 1000);
+    const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
   }, [socket]);
 
