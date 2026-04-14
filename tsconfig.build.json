@@ -6,8 +6,10 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "noEmit": true,
     "declaration": true,
+    "emitDeclarationOnly": true,
+    "declarationDir": "dist",
+    "rootDir": "src",
     "lib": ["ESNext", "DOM"]
   },
   "include": ["src"]

@@ -22,8 +22,33 @@ Tab 1 (Leader)        Tab 2 (Follower)      Tab 3 (Follower)
 
 ## Installation
 
+### From npm
+
 ```bash
 npm install shared-websocket
+```
+
+### From GitHub (latest source)
+
+```bash
+npm install github:Gwakko/shared-websocket
+```
+
+### Manual (copy into your project)
+
+```bash
+# Clone and copy src/ into your project
+git clone https://github.com/Gwakko/shared-websocket.git
+cp -r shared-websocket/src ./your-project/shared-websocket
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/Gwakko/shared-websocket.git
+cd shared-websocket
+npm install
+npm run build   # outputs ESM + CJS + types to dist/
 ```
 
 ## Usage — Vanilla TypeScript
