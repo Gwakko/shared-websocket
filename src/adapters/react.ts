@@ -124,39 +124,68 @@ export function useSocketEvent<T>(event: string, callback?: (data: T) => void): 
 
 /**
  * Accumulate WebSocket events into an array.
- * Uses useEffectEvent — handler always sees latest state without re-subscribing.
+ * - Without callback: returns accumulated array (reactive state).
+ * - With callback: calls your handler on each event, you manage your own state.
  *
  * @example
+ * // Default — accumulates all events
  * const messages = useSocketStream<ChatMessage>('chat.message');
+ *
+ * @example
+ * // Custom callback — keep only last 50, transform, filter, etc.
+ * const [messages, setMessages] = useState<ChatMessage[]>([]);
+ * useSocketStream<ChatMessage>('chat.message', (msg) => {
+ *   setMessages(prev => [msg, ...prev].slice(0, 50));
+ * });
+ *
+ * @example
+ * // Custom callback — filter by type
+ * const [errors, setErrors] = useState<LogEntry[]>([]);
+ * useSocketStream<LogEntry>('log.entry', (entry) => {
+ *   if (entry.level === 'error') setErrors(prev => [...prev, entry]);
+ * });
  */
-export function useSocketStream<T>(event: string): T[] {
+export function useSocketStream<T>(event: string, callback?: (data: T) => void): T[] {
   const socket = useSharedWebSocket();
   const [items, setItems] = useState<T[]>([]);
 
   const onEvent = useEffectEvent((data: T) => {
-    setItems((prev) => [...prev, data]);
+    if (callback) {
+      callback(data);
+    } else {
+      setItems((prev) => [...prev, data]);
+    }
   });
 
   useEffect(() => {
-    setItems([]);
+    if (!callback) setItems([]);
     const unsub = socket.on(event, onEvent);
     return unsub;
   }, [socket, event]);
 
-  return items;
+  return callback ? [] : items;
 }
 
 /**
  * Two-way state sync across browser tabs.
- * Uses useEffectEvent for stable sync callback.
+ * - Without callback: returns [value, setter] (like useState but synced).
+ * - With callback: calls your handler when any tab updates this key.
  *
  * @example
+ * // Default — reactive synced state
  * const [cart, setCart] = useSocketSync<Cart>('cart', { items: [] });
- * // setCart in one tab → updates all tabs instantly
+ *
+ * @example
+ * // Custom callback — side effects on sync
+ * const [cart, setCart] = useSocketSync<Cart>('cart', { items: [] }, (cart) => {
+ *   document.title = `Cart (${cart.items.length})`;
+ *   analytics.track('cart_updated', { count: cart.items.length });
+ * });
  */
 export function useSocketSync<T>(
   key: string,
   initialValue: T,
+  callback?: (value: T) => void,
 ): [T, (value: T) => void] {
   const socket = useSharedWebSocket();
   const [value, setValue] = useState<T>(() => {
@@ -165,6 +194,7 @@ export function useSocketSync<T>(
 
   const onSync = useEffectEvent((synced: T) => {
     setValue(synced);
+    callback?.(synced);
   });
 
   useEffect(() => {
