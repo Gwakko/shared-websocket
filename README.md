@@ -881,7 +881,7 @@ Functions can't be passed to Workers via `postMessage`. To use custom serializat
 
 **1. Copy the template:**
 ```bash
-cp node_modules/@gwakko/shared-websocket/src/worker/socket.worker.template.ts ./src/workers/my-socket.worker.ts
+cp node_modules/@gwakko/shared-websocket/src/worker/socket.worker.template.txt ./src/workers/my-socket.worker.ts
 ```
 
 **2. Edit `serialize`/`deserialize` at the top:**
@@ -921,7 +921,7 @@ new SharedWebSocket(url, {
 });
 ```
 
-The template file is at `src/worker/socket.worker.template.ts` — fully commented with MessagePack, Protobuf, and CBOR examples.
+The template file is at `src/worker/socket.worker.template.txt` — fully commented with MessagePack, Protobuf, and CBOR examples.
 
 ## Custom Event Protocol
 
