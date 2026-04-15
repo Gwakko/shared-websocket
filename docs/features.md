@@ -21,6 +21,7 @@ Deep dive into all Shared WebSocket features with examples for Vanilla, React, a
 - [Lifecycle Hooks](#lifecycle-hooks)
 - [Stream — Consume Events as Async Iterator](#stream--consume-events-as-async-iterator)
 - [Request — Request/Response Through Server](#request--requestresponse-through-server)
+- [File Upload with Progress](#file-upload-with-progress)
 
 ## Typed Events
 
@@ -632,3 +633,180 @@ function UserProfile({ userId }: { userId: string }) {
   return user ? <div>{user.name}</div> : <div>Loading...</div>;
 }
 ```
+
+## File Upload with Progress
+
+WebSocket API has no built-in upload progress. Use **chunked upload** — split file into pieces, send one by one, track progress on each chunk. For large files prefer HTTP upload with `fetch()` + progress events.
+
+### Vanilla
+
+```typescript
+interface UploadProgress {
+  uploadId: string;
+  loaded: number;
+  total: number;
+  percent: number;
+}
+
+async function uploadFile(
+  ws: SharedWebSocket,
+  file: File,
+  onProgress?: (progress: UploadProgress) => void,
+): Promise<string> {
+  const CHUNK_SIZE = 64 * 1024; // 64KB chunks
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  const uploadId = crypto.randomUUID();
+
+  // 1. Tell server we're starting
+  ws.send('file.upload.start', {
+    uploadId,
+    name: file.name,
+    size: file.size,
+    type: file.contentType,
+    totalChunks,
+  });
+
+  // 2. Send chunks one by one
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const chunk = file.slice(start, end);
+    const buffer = await chunk.arrayBuffer();
+
+    ws.send('file.upload.chunk', {
+      uploadId,
+      index: i,
+      data: Array.from(new Uint8Array(buffer)), // bytes as JSON array
+    });
+
+    onProgress?.({
+      uploadId,
+      loaded: end,
+      total: file.size,
+      percent: Math.round((end / file.size) * 100),
+    });
+  }
+
+  // 3. Tell server upload is complete
+  ws.send('file.upload.complete', { uploadId });
+
+  // 4. Wait for server confirmation
+  return new Promise((resolve) => {
+    ws.once('file.upload.done', (result: { uploadId: string; url: string }) => {
+      if (result.uploadId === uploadId) resolve(result.url);
+    });
+  });
+}
+
+// Usage
+await withSocket(url, async ({ ws }) => {
+  const input = document.querySelector<HTMLInputElement>('#file-input')!;
+  const file = input.files![0];
+
+  const url = await uploadFile(ws, file, (progress) => {
+    progressBar.style.width = `${progress.percent}%`;
+    progressLabel.textContent = `${progress.percent}% (${formatBytes(progress.loaded)}/${formatBytes(progress.total)})`;
+  });
+
+  console.log('Uploaded:', url);
+});
+```
+
+### React
+
+```tsx
+function FileUploader() {
+  const ws = useSharedWebSocket();
+  const [progress, setProgress] = useState(0);
+  const [uploading, setUploading] = useState(false);
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    setProgress(0);
+
+    const url = await uploadFile(ws, file, (p) => setProgress(p.percent));
+
+    setUploading(false);
+    console.log('Uploaded:', url);
+  }
+
+  return (
+    <div>
+      <input type="file" onChange={handleUpload} disabled={uploading} />
+      {uploading && (
+        <div className="progress-bar">
+          <div style={{ width: `${progress}%` }} />
+          <span>{progress}%</span>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+### Vue
+
+```vue
+<script setup lang="ts">
+const ws = useSharedWebSocket();
+const progress = ref(0);
+const uploading = ref(false);
+
+async function handleUpload(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+
+  uploading.value = true;
+  progress.value = 0;
+
+  const url = await uploadFile(ws, file, (p) => {
+    progress.value = p.percent;
+  });
+
+  uploading.value = false;
+  console.log('Uploaded:', url);
+}
+</script>
+
+<template>
+  <input type="file" @change="handleUpload" :disabled="uploading" />
+  <div v-if="uploading" class="progress-bar">
+    <div :style="{ width: `${progress}%` }" />
+    <span>{{ progress }}%</span>
+  </div>
+</template>
+```
+
+### Server (Node.js)
+
+```typescript
+const uploads = new Map<string, { chunks: Buffer[]; meta: any }>();
+
+// Inside ws.on('message') handler:
+case 'file.upload.start':
+  uploads.set(data.uploadId, { chunks: [], meta: data });
+  break;
+
+case 'file.upload.chunk':
+  const upload = uploads.get(data.uploadId);
+  if (upload) {
+    upload.chunks[data.index] = Buffer.from(data.data);
+  }
+  break;
+
+case 'file.upload.complete': {
+  const upload = uploads.get(data.uploadId);
+  if (upload) {
+    const file = Buffer.concat(upload.chunks);
+    const url = await saveToStorage(file, upload.meta.name);
+    send(ws, 'file.upload.done', { uploadId: data.uploadId, url });
+    uploads.delete(data.uploadId);
+  }
+  break;
+}
+```
+
+> **When to use HTTP instead:** Files > 10MB, need resume on disconnect, need server-side validation before accepting, CDN upload (S3 presigned URL). WebSocket chunked upload is best for small files (< 5MB) where real-time progress is needed and you're already connected.
