@@ -1468,6 +1468,66 @@ function notifyNewOrder(order: Order) {
   });
   // Only clients who called ws.subscribe('notifications:orders') receive this
 }
+
+// ─── Push Notifications ──────────────────────────
+
+// Client listens via: ws.push('notification', { render: ... })
+// Server sends 'notification' event — client shows toast/push
+function sendPushNotification(
+  targetUserId: string,
+  notification: { id: string; title: string; body: string; type: string; url?: string },
+) {
+  for (const [ws, state] of clients) {
+    if (state.userId === targetUserId) {
+      send(ws, 'notification', notification);
+    }
+  }
+}
+
+// Broadcast push to all connected clients
+function broadcastPush(notification: { id: string; title: string; body: string; type: string }) {
+  for (const [ws] of clients) {
+    send(ws, 'notification', notification);
+  }
+}
+
+// ─── Usage examples ──────────────────────────────
+
+// After order created — notify the merchant
+async function onOrderCreated(order: Order) {
+  // 1. Notify via topic (only subscribers)
+  broadcastToTopic('notifications:orders', 'new', order);
+
+  // 2. Push notification to specific user
+  sendPushNotification(order.merchantId, {
+    id: `order-${order.id}`,
+    title: `New Order #${order.id}`,
+    body: `$${order.total} from ${order.customerName}`,
+    type: 'success',
+    url: `/orders/${order.id}`,
+  });
+}
+
+// Payment failed — critical alert to user
+async function onPaymentFailed(payment: Payment) {
+  sendPushNotification(payment.userId, {
+    id: `payment-${payment.id}`,
+    title: 'Payment Failed',
+    body: `Your payment of $${payment.amount} could not be processed`,
+    type: 'error',
+    url: `/payments/${payment.id}`,
+  });
+}
+
+// System maintenance — broadcast to everyone
+async function onMaintenanceScheduled(time: string) {
+  broadcastPush({
+    id: `maintenance-${Date.now()}`,
+    title: 'Scheduled Maintenance',
+    body: `System will be down for maintenance at ${time}`,
+    type: 'warning',
+  });
+}
 ```
 
 ### Go — Server Example
@@ -1509,6 +1569,21 @@ func handleMessage(conn *websocket.Conn, state *ClientState, msg Message) {
         conn.WriteJSON(Message{Event: "pong"})
     }
 }
+
+// Send push notification to specific user
+func sendPushNotification(userID string, title, body, notifType string) {
+    for conn, state := range clients {
+        if state.UserID == userID {
+            conn.WriteJSON(Message{
+                Event: "notification",
+                Data:  json.RawMessage(fmt.Sprintf(
+                    `{"id":"%s","title":"%s","body":"%s","type":"%s"}`,
+                    uuid.NewString(), title, body, notifType,
+                )),
+            })
+        }
+    }
+}
 ```
 
 ### PHP (Laravel + Ratchet/Swoole) — Server Example
@@ -1544,6 +1619,28 @@ public function notifyTopic(string $topic, string $event, array $data): void
         }
     }
 }
+
+// Send push notification to user
+public function sendPushNotification(string $userId, array $notification): void
+{
+    foreach ($this->connections as $conn) {
+        if ($this->getUserId($conn) === $userId) {
+            $conn->send(json_encode([
+                'event' => 'notification',
+                'data' => $notification,
+            ]));
+        }
+    }
+}
+
+// Usage:
+// $this->sendPushNotification($order->merchant_id, [
+//     'id' => Str::uuid(),
+//     'title' => "New Order #{$order->id}",
+//     'body' => "\${$order->total} from {$order->customer_name}",
+//     'type' => 'success',
+//     'url' => "/orders/{$order->id}",
+// ]);
 ```
 
 ## Exported Types
