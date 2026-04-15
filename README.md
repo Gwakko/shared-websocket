@@ -2,6 +2,40 @@
 
 Share ONE WebSocket connection across multiple browser tabs. Zero dependencies. React and Vue adapters included.
 
+## Table of Contents
+
+- [Problem](#problem)
+- [Solution](#solution)
+- [Installation](#installation)
+- [Usage — Vanilla TypeScript](#usage--vanilla-typescript)
+  - [Scoped Lifecycle — withSocket()](#scoped-lifecycle--withsocket)
+- [Usage — React](#usage--react)
+- [Usage — Vue 3](#usage--vue-3)
+- [API Reference](#api-reference)
+  - [Options](#options)
+  - [Authentication](#authentication)
+  - [React Hooks](#react-hooks-react-19-useeffectevent-for-stable-refs)
+  - [Vue Composables](#vue-composables)
+- [How It Works](#how-it-works)
+- [When to Use `useWorker: true`](#when-to-use-useworker-true)
+- [Typed Events](#typed-events)
+  - [Type narrowing](#type-narrowing-for-untyped-events)
+  - [Runtime validation with Zod](#runtime-validation-with-zod)
+- [Middleware](#middleware)
+- [Debug Mode & Custom Logger](#debug-mode--custom-logger)
+- [Custom Event Protocol](#custom-event-protocol)
+- [Advanced Examples](#advanced-examples)
+  - [Stream](#stream--consume-events-as-async-iterator)
+  - [Request](#request--requestresponse-through-server)
+  - [Protocols](#protocols--websocket-subprotocols)
+  - [Worker URL](#worker-url--custom-worker-file)
+  - [Lifecycle Hooks](#lifecycle-hooks)
+  - [Private Channels](#private-channels--chat-rooms-tenant-notifications)
+  - [Server-side channel handling](#server-side-channel-handling)
+- [Exported Types](#exported-types)
+- [Browser Support](#browser-support)
+- [License](#license)
+
 ## Problem
 
 5 tabs open = 5 WebSocket connections = 5x server resources for the same user.
