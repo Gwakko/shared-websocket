@@ -11,6 +11,8 @@ Complete server reference for integrating with Shared WebSocket clients.
 - [Node.js (ws) — Complete Server Example](#nodejs-ws--complete-server-example)
 - [Go — Server Example](#go--server-example)
 - [PHP (Laravel + Ratchet/Swoole) — Server Example](#php-laravel--ratchetswoole--server-example)
+- [Global Custom Serialization (MessagePack)](#global-custom-serialization-messagepack)
+- [Per-Event Serialization (mixed JSON + binary)](#per-event-serialization-mixed-json--binary)
 
 ## Message Format
 
@@ -340,3 +342,200 @@ public function sendPushNotification(string $userId, array $notification): void
 //     'url' => "/orders/{$order->id}",
 // ]);
 ```
+
+## Global Custom Serialization (MessagePack)
+
+When client uses global `serialize`/`deserialize` (e.g., MessagePack), the **server must use the same format**.
+
+### Client
+
+```typescript
+import { encode, decode } from '@msgpack/msgpack';
+
+new SharedWebSocket('wss://api.example.com/ws', {
+  serialize: (data) => encode(data),
+  deserialize: (raw) => decode(raw as ArrayBuffer),
+});
+```
+
+### Node.js Server (MessagePack)
+
+```typescript
+import { WebSocketServer } from 'ws';
+import { encode, decode } from '@msgpack/msgpack';
+
+const wss = new WebSocketServer({ port: 8080 });
+
+wss.on('connection', (ws) => {
+  // Receive: binary → decode
+  ws.on('message', (raw: Buffer, isBinary: boolean) => {
+    const msg = isBinary
+      ? decode(raw)                              // MessagePack binary
+      : JSON.parse(raw.toString());              // fallback to JSON
+
+    const { event, data } = msg as { event: string; data: unknown };
+
+    switch (event) {
+      case 'chat.send':
+        broadcastMsgpack(wss, 'chat.message', {
+          userId: getUserId(ws),
+          text: (data as any).text,
+          timestamp: Date.now(),
+        });
+        break;
+
+      case 'ping':
+        // Respond with msgpack
+        ws.send(encode({ type: 'pong' }));
+        break;
+    }
+  });
+});
+
+// Send: encode → binary
+function sendMsgpack(ws: WebSocket, event: string, data: unknown) {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(encode({ event, data }));
+  }
+}
+
+function broadcastMsgpack(wss: WebSocketServer, event: string, data: unknown) {
+  const payload = encode({ event, data });
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+}
+```
+
+### Go Server (MessagePack)
+
+```go
+import "github.com/vmihailenco/msgpack/v5"
+
+// Receive
+func handleConnection(conn *websocket.Conn) {
+    for {
+        _, raw, err := conn.ReadMessage()
+        if err != nil { break }
+
+        var msg struct {
+            Event string      `msgpack:"event"`
+            Data  interface{} `msgpack:"data"`
+        }
+        msgpack.Unmarshal(raw, &msg)
+        // handle msg.Event...
+    }
+}
+
+// Send
+func sendMsgpack(conn *websocket.Conn, event string, data interface{}) {
+    payload, _ := msgpack.Marshal(map[string]interface{}{
+        "event": event,
+        "data":  data,
+    })
+    conn.WriteMessage(websocket.BinaryMessage, payload)
+}
+```
+
+## Per-Event Serialization (mixed JSON + binary)
+
+When client uses `ws.serializer('event', fn)` for specific events, the global format stays JSON. Only the `data` field of registered events gets custom serialized.
+
+### Client
+
+```typescript
+const ws = new SharedWebSocket('wss://api.example.com/ws');
+// Global: JSON (default)
+
+// Per-event: file.upload sends raw binary in data field
+ws.serializer('file.upload', (data) => data);  // pass ArrayBuffer as-is
+
+// Per-event: trading.order sends Protobuf in data field
+ws.serializer('trading.order', (data) => OrderProto.encode(data).finish());
+ws.deserializer('trading.tick', (data) => TickProto.decode(data as Uint8Array));
+```
+
+**What the server receives:**
+
+```
+Regular event (JSON everywhere):
+  { "event": "chat.send", "data": { "text": "hello" } }
+
+Per-event serialized (JSON envelope, binary data):
+  { "event": "file.upload", "data": <ArrayBuffer> }
+  { "event": "trading.order", "data": <Protobuf bytes> }
+```
+
+> **Note:** Per-event serialization transforms the `data` field before the global serializer wraps it. If global is JSON, the message is still a JSON object — but the `data` field contains the custom-serialized value. Your server needs to know which events use custom serialization and decode accordingly.
+
+### Node.js Server (mixed)
+
+```typescript
+import { WebSocketServer } from 'ws';
+import { OrderProto, TickProto } from './proto/messages';
+
+const wss = new WebSocketServer({ port: 8080 });
+
+// Events that use custom serialization
+const binaryEvents = new Set(['file.upload', 'trading.order']);
+const protoDecoders: Record<string, (buf: Buffer) => unknown> = {
+  'trading.order': (buf) => OrderProto.decode(buf),
+};
+
+wss.on('connection', (ws) => {
+  ws.on('message', (raw: Buffer) => {
+    const msg = JSON.parse(raw.toString());
+    const { event, data } = msg;
+
+    // Decode per-event data if needed
+    let decodedData = data;
+    if (protoDecoders[event] && Buffer.isBuffer(data)) {
+      decodedData = protoDecoders[event](data);
+    }
+
+    switch (event) {
+      case 'trading.order':
+        processOrder(decodedData);
+        // Respond with Protobuf-encoded tick
+        sendWithProto(ws, 'trading.tick', latestTick);
+        break;
+
+      case 'file.upload':
+        // data is raw binary
+        saveFile(getUserId(ws), data);
+        send(ws, 'file.uploaded', { success: true });
+        break;
+
+      default:
+        // Regular JSON events
+        handleJsonEvent(ws, event, data);
+    }
+  });
+});
+
+// Send event with Protobuf data field
+function sendWithProto(ws: WebSocket, event: string, data: unknown) {
+  const encoded = TickProto.encode(data).finish();
+  ws.send(JSON.stringify({
+    event,
+    data: Array.from(encoded),  // Protobuf bytes as JSON array
+  }));
+}
+
+// Send regular JSON event
+function send(ws: WebSocket, event: string, data: unknown) {
+  ws.send(JSON.stringify({ event, data }));
+}
+```
+
+### Key difference: Global vs Per-Event
+
+| Aspect | Global Serialization | Per-Event Serialization |
+|--------|---------------------|------------------------|
+| **What changes** | Entire message wire format | Only `data` field for registered events |
+| **Server impact** | Must use same format (msgpack/protobuf) | Only decode specific events differently |
+| **Default** | `JSON.stringify` / `JSON.parse` | None (uses global) |
+| **Worker** | Edit worker template | Works automatically (main thread) |
+| **Use case** | All traffic is binary | Most is JSON, some events are binary |

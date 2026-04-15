@@ -4,6 +4,20 @@ Share **one** WebSocket connection across all browser tabs. Leader election via 
 
 [![npm](https://img.shields.io/npm/v/@gwakko/shared-websocket)](https://www.npmjs.com/package/@gwakko/shared-websocket)
 
+## Table of Contents
+
+- [How It Works](#how-it-works)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+  - [Vanilla TypeScript](#vanilla-typescript)
+  - [React 19](#react-19)
+  - [Vue 3](#vue-3)
+- [Features](#features)
+- [Processing Pipeline](#processing-pipeline)
+- [Options](#options)
+- [Documentation](#documentation)
+- [Browser Support](#browser-support)
+
 ## How It Works
 
 ```
