@@ -650,7 +650,16 @@ const msg = useSafeSocketEvent('chat.message', ChatMessageSchema);
 
 ## Middleware
 
-Transform or inspect messages before send / after receive:
+Transform or inspect messages before send / after receive.
+
+**Processing order:**
+
+```
+Outgoing: ws.send(data) → outgoing middleware → serialize → WebSocket.send()
+Incoming: WebSocket.onmessage → deserialize → incoming middleware → event handlers
+```
+
+> Middleware works with **deserialized objects** (not raw bytes). Serialization happens at the transport layer — middleware operates on structured data before serialization (outgoing) or after deserialization (incoming).
 
 ```typescript
 const ws = new SharedWebSocket(url);
@@ -794,7 +803,27 @@ app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
 
 ## Custom Serialization
 
-By default all messages are serialized/deserialized as JSON. Override for binary formats:
+By default all messages are serialized/deserialized as JSON. Override for binary formats.
+
+**Where serialization fits in the pipeline:**
+
+```
+Outgoing:
+  ws.send(event, data)
+    → build payload object { event, data }
+    → outgoing middleware (operates on object)
+    → serialize(payload) → string | ArrayBuffer    ← HERE
+    → WebSocket.send(serialized)
+
+Incoming:
+  WebSocket.onmessage(raw)
+    → deserialize(raw) → object                    ← HERE
+    → incoming middleware (operates on object)
+    → extract event + data from object
+    → emit to handlers
+```
+
+Middleware always works with **deserialized objects**. Serialization is the last step before wire (outgoing) and first step after wire (incoming).
 
 ```typescript
 // Default — JSON (no config needed)
