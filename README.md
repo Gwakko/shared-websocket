@@ -873,7 +873,55 @@ Serialization applies to **all** WebSocket I/O: send, receive, heartbeat, and bu
 | `serialize` | `JSON.stringify` | `(data) => string \| ArrayBuffer \| Blob` | Outgoing message encoding |
 | `deserialize` | `JSON.parse` | `(raw) => unknown` | Incoming message decoding |
 
-> **Note:** When using `useWorker: true`, the Worker still uses JSON internally. Custom serialize/deserialize only applies to the main-thread SharedSocket. For binary in Worker mode, provide a custom `workerUrl` with your serialization logic.
+> **Note:** `serialize`/`deserialize` options apply to the main-thread `SharedSocket`. For Worker mode, use a custom worker file (see below).
+
+### Custom Worker with Binary Serialization
+
+Functions can't be passed to Workers via `postMessage`. To use custom serialization in Worker mode, copy the template worker and edit the `serialize`/`deserialize` functions:
+
+**1. Copy the template:**
+```bash
+cp node_modules/@gwakko/shared-websocket/src/worker/socket.worker.template.ts ./src/workers/my-socket.worker.ts
+```
+
+**2. Edit `serialize`/`deserialize` at the top:**
+```typescript
+// my-socket.worker.ts
+import { encode, decode } from '@msgpack/msgpack';
+
+function serialize(data: unknown): string | ArrayBuffer {
+  return encode(data);  // ← your format
+}
+
+function deserialize(raw: string | ArrayBuffer): unknown {
+  return decode(raw as ArrayBuffer);  // ← your format
+}
+
+// ... rest of worker code unchanged
+```
+
+**3. Use your worker:**
+```typescript
+// Vite
+new SharedWebSocket(url, {
+  useWorker: true,
+  workerUrl: new URL('./workers/my-socket.worker.ts', import.meta.url),
+});
+
+// Webpack 5
+new SharedWebSocket(url, {
+  useWorker: true,
+  workerUrl: new URL('./workers/my-socket.worker.ts', import.meta.url),
+});
+
+// Static file (pre-built)
+new SharedWebSocket(url, {
+  useWorker: true,
+  workerUrl: '/workers/my-socket.worker.js',
+});
+```
+
+The template file is at `src/worker/socket.worker.template.ts` — fully commented with MessagePack, Protobuf, and CBOR examples.
 
 ## Custom Event Protocol
 
