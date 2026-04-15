@@ -89,6 +89,22 @@ export interface EventProtocol {
   ping: unknown;
   /** Fallback event name when message has no event field (default: "message"). */
   defaultEvent: string;
+  /** Event name for topic subscribe (default: "$topic:subscribe"). */
+  topicSubscribe: string;
+  /** Event name for topic unsubscribe (default: "$topic:unsubscribe"). */
+  topicUnsubscribe: string;
+}
+
+/** Push notification options. */
+export interface PushNotificationOptions {
+  /** Only show from leader tab (default: true). Prevents duplicate notifications. */
+  leaderOnly?: boolean;
+  /** Only show when tab is hidden (default: true). */
+  onlyWhenHidden?: boolean;
+  /** Default icon for notifications. */
+  icon?: string;
+  /** Use event field as notification tag for deduplication. */
+  tagField?: string;
 }
 
 /** Lifecycle event handlers for useSocketLifecycle / onConnect / etc. */

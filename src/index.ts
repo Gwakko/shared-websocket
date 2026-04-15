@@ -24,4 +24,5 @@ export type {
   EventMap,
   Logger,
   Middleware,
+  PushNotificationOptions,
 } from './types';

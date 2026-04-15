@@ -328,3 +328,56 @@ export function useChannel(name: string) {
 
   return channelRef.current;
 }
+
+/**
+ * Subscribe to server-side topics. Auto-unsubscribes on unmount.
+ *
+ * @example
+ * useTopics(['notifications:orders', 'notifications:payments']);
+ * useTopics([`user:${userId}:mentions`]);
+ */
+export function useTopics(topics: string[]): void {
+  const socket = useSharedWebSocket();
+
+  useEffect(() => {
+    topics.forEach((t) => socket.subscribe(t));
+    return () => topics.forEach((t) => socket.unsubscribe(t));
+  }, [socket, topics.join(',')]);
+}
+
+/**
+ * Enable browser push notifications for an event. Auto-cleanup on unmount.
+ *
+ * @example
+ * usePush('notification', {
+ *   title: (n) => n.title,
+ *   body: (n) => n.body,
+ *   icon: '/icon.png',
+ * });
+ *
+ * @example
+ * usePush('order.created', {
+ *   title: (order) => `New Order #${order.id}`,
+ *   body: (order) => `$${order.total}`,
+ *   onClick: (order) => navigate(`/orders/${order.id}`),
+ * });
+ */
+export function usePush<T = unknown>(
+  event: string,
+  config: {
+    title: string | ((data: T) => string);
+    body?: string | ((data: T) => string);
+    icon?: string;
+    tag?: string | ((data: T) => string);
+    leaderOnly?: boolean;
+    onlyWhenHidden?: boolean;
+    onClick?: (data: T) => void;
+  },
+): void {
+  const socket = useSharedWebSocket();
+
+  useEffect(() => {
+    const unsub = socket.push<T>(event, config);
+    return unsub;
+  }, [socket, event]);
+}

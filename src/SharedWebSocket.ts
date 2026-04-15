@@ -14,6 +14,8 @@ const DEFAULT_PROTOCOL: EventProtocol = {
   channelLeave: '$channel:leave',
   ping: { type: 'ping' },
   defaultEvent: 'message',
+  topicSubscribe: '$topic:subscribe',
+  topicUnsubscribe: '$topic:unsubscribe',
 };
 
 const NOOP_LOGGER: Logger = {
@@ -325,6 +327,102 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         unsubs.length = 0;
       },
     };
+  }
+
+  // ─── Topics ──────────────────────────────────────────
+
+  /**
+   * Subscribe to a server-side topic. Server will start sending events for this topic.
+   * Sends topicSubscribe event (default: "$topic:subscribe").
+   *
+   * @example
+   * ws.subscribe('notifications:orders');
+   * ws.subscribe('notifications:payments');
+   * ws.subscribe(`user:${userId}:mentions`);
+   */
+  subscribe(topic: string): void {
+    this.send(this.proto.topicSubscribe, { topic });
+    this.log.debug('[SharedWS] 📌 subscribe topic', topic);
+  }
+
+  /**
+   * Unsubscribe from a server-side topic.
+   * Sends topicUnsubscribe event (default: "$topic:unsubscribe").
+   */
+  unsubscribe(topic: string): void {
+    this.send(this.proto.topicUnsubscribe, { topic });
+    this.log.debug('[SharedWS] 📌 unsubscribe topic', topic);
+  }
+
+  // ─── Push Notifications ─────────────────────────────
+
+  /**
+   * Enable browser push notifications for a WebSocket event.
+   * Requests permission if needed. Shows only from leader tab to prevent duplicates.
+   *
+   * @example
+   * ws.push('notification', {
+   *   title: (data) => data.title,
+   *   body: (data) => data.body,
+   * });
+   *
+   * @example
+   * ws.push('order.created', {
+   *   title: (data) => `New Order #${data.id}`,
+   *   body: (data) => `$${data.total} from ${data.customer}`,
+   *   icon: '/icons/order.png',
+   *   tag: (data) => `order-${data.id}`,
+   *   leaderOnly: true,
+   *   onlyWhenHidden: true,
+   * });
+   */
+  push<T = unknown>(
+    event: string,
+    config: {
+      title: string | ((data: T) => string);
+      body?: string | ((data: T) => string);
+      icon?: string;
+      tag?: string | ((data: T) => string);
+      leaderOnly?: boolean;
+      onlyWhenHidden?: boolean;
+      onClick?: (data: T) => void;
+    },
+  ): Unsubscribe {
+    const leaderOnly = config.leaderOnly ?? true;
+    const onlyWhenHidden = config.onlyWhenHidden ?? true;
+
+    // Request permission on first call
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
+    return this.on(event, ((data: unknown) => {
+      const typed = data as T;
+
+      if (leaderOnly && this.tabRole !== 'leader') return;
+      if (onlyWhenHidden && typeof document !== 'undefined' && !document.hidden) return;
+      if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+
+      const title = typeof config.title === 'function' ? config.title(typed) : config.title;
+      const body = typeof config.body === 'function' ? config.body(typed) : config.body;
+      const tag = typeof config.tag === 'function' ? config.tag(typed) : config.tag;
+
+      const notif = new Notification(title, {
+        body,
+        icon: config.icon,
+        tag,
+      });
+
+      if (config.onClick) {
+        const handler = config.onClick;
+        notif.onclick = () => {
+          handler(typed);
+          window.focus();
+        };
+      }
+
+      this.log.debug('[SharedWS] 🔔 push notification', title);
+    }) as EventHandler);
   }
 
   disconnect(): void {

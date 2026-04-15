@@ -32,6 +32,9 @@ Share ONE WebSocket connection across multiple browser tabs. Zero dependencies. 
   - [Lifecycle Hooks](#lifecycle-hooks)
   - [Private Channels](#private-channels--chat-rooms-tenant-notifications)
   - [Server-side channel handling](#server-side-channel-handling)
+- [Topics](#topics--server-side-filtered-subscriptions)
+- [Push Notifications](#push-notifications)
+- [Server-Side Implementation Guide](#server-side-implementation-guide)
 - [Exported Types](#exported-types)
 - [Browser Support](#browser-support)
 - [License](#license)
@@ -1074,6 +1077,343 @@ wss.on('connection', (ws) => {
 });
 ```
 
+## Topics — Server-Side Filtered Subscriptions
+
+Subscribe to specific topics so the server only sends relevant events:
+
+```typescript
+// Vanilla
+ws.subscribe('notifications:orders');
+ws.subscribe('notifications:payments');
+ws.subscribe(`user:${userId}:mentions`);
+
+// Later — unsubscribe
+ws.unsubscribe('notifications:orders');
+```
+
+```tsx
+// React — auto-subscribe on mount, unsubscribe on unmount
+function OrdersDashboard() {
+  useTopics(['notifications:orders', 'notifications:payments']);
+
+  const order = useSocketEvent('notifications:orders:new');
+  return order ? <div>New order #{order.id}</div> : null;
+}
+
+// Dynamic topics
+function UserMentions({ userId }: { userId: string }) {
+  useTopics([`user:${userId}:mentions`]);
+  useSocketCallback(`user:${userId}:mentions:mention`, showMentionToast);
+  return null;
+}
+```
+
+```vue
+<!-- Vue — same pattern -->
+<script setup>
+const props = defineProps<{ userId: string }>();
+useTopics([`user:${props.userId}:mentions`]);
+useSocketEvent(`user:${props.userId}:mentions:mention`, showToast);
+</script>
+```
+
+Server receives `$topic:subscribe` / `$topic:unsubscribe` events (configurable via `events.topicSubscribe`).
+
+## Push Notifications
+
+Built-in browser Notification API integration. Shows only from leader tab (prevents N duplicates for N tabs):
+
+```typescript
+// Vanilla
+ws.push('notification', {
+  title: (n) => n.title,
+  body: (n) => n.body,
+  icon: '/icons/bell.png',
+  tag: (n) => `notif-${n.id}`,  // deduplication
+  onClick: (n) => window.open(n.url),
+});
+
+ws.push('order.created', {
+  title: (order) => `New Order #${order.id}`,
+  body: (order) => `$${order.total} from ${order.customer}`,
+  icon: '/icons/order.png',
+  tag: (order) => `order-${order.id}`,
+  leaderOnly: true,       // default: true — only leader shows notification
+  onlyWhenHidden: true,   // default: true — only when tab is in background
+});
+```
+
+```tsx
+// React — auto-cleanup on unmount
+function NotificationPush() {
+  usePush('notification', {
+    title: (n) => n.title,
+    body: (n) => n.body,
+    icon: '/icons/bell.png',
+  });
+
+  usePush('order.created', {
+    title: (order) => `New Order #${order.id}`,
+    body: (order) => `$${order.total}`,
+    onClick: (order) => navigate(`/orders/${order.id}`),
+  });
+
+  return null;  // no UI — just push notifications
+}
+```
+
+```vue
+<!-- Vue -->
+<script setup>
+usePush('notification', {
+  title: (n) => n.title,
+  body: (n) => n.body,
+  icon: '/icons/bell.png',
+});
+
+usePush('order.created', {
+  title: (order) => `New Order #${order.id}`,
+  body: (order) => `$${order.total}`,
+});
+</script>
+```
+
+## Server-Side Implementation Guide
+
+Complete server reference — what events to listen for and how to respond.
+
+### Message Format
+
+All messages are JSON with two fields (configurable via `events` option):
+
+```
+Client → Server: { "event": "event.name", "data": { ... } }
+Server → Client: { "event": "event.name", "data": { ... } }
+```
+
+### System Events (sent by client automatically)
+
+| Event | When | Payload | Your Server Should |
+|-------|------|---------|-------------------|
+| `ping` | Every 30s (heartbeat) | `{ "type": "ping" }` | Respond with `{ "type": "pong" }` or ignore |
+| `$channel:join` | `ws.channel('name')` | `{ "channel": "chat:room_1" }` | Track which channels this connection belongs to |
+| `$channel:leave` | `channel.leave()` | `{ "channel": "chat:room_1" }` | Remove connection from channel |
+| `$topic:subscribe` | `ws.subscribe('topic')` | `{ "topic": "notifications:orders" }` | Start sending events for this topic to this connection |
+| `$topic:unsubscribe` | `ws.unsubscribe('topic')` | `{ "topic": "notifications:orders" }` | Stop sending events for this topic |
+
+### Node.js (ws) — Complete Server Example
+
+```typescript
+import { WebSocketServer, WebSocket } from 'ws';
+
+const wss = new WebSocketServer({ port: 8080 });
+
+// Track per-connection state
+interface ClientState {
+  userId?: string;
+  channels: Set<string>;
+  topics: Set<string>;
+}
+
+const clients = new Map<WebSocket, ClientState>();
+
+wss.on('connection', (ws, req) => {
+  // Extract auth token from URL
+  const url = new URL(req.url!, `http://${req.headers.host}`);
+  const token = url.searchParams.get('token');
+  const userId = verifyToken(token);  // your auth logic
+
+  const state: ClientState = {
+    userId,
+    channels: new Set(),
+    topics: new Set(),
+  };
+  clients.set(ws, state);
+
+  // Send welcome
+  send(ws, 'welcome', { userId, timestamp: Date.now() });
+
+  ws.on('message', (raw) => {
+    const msg = JSON.parse(raw.toString());
+    const { event, data } = msg;
+
+    switch (event) {
+      // ─── System Events ───────────────────────
+
+      case 'ping':
+        // Respond to heartbeat (optional — some servers ignore pings)
+        ws.send(JSON.stringify({ type: 'pong' }));
+        break;
+
+      // ─── Channel Events ──────────────────────
+
+      case '$channel:join':
+        state.channels.add(data.channel);
+        console.log(`${userId} joined ${data.channel}`);
+        // Send channel history, presence, etc.
+        break;
+
+      case '$channel:leave':
+        state.channels.delete(data.channel);
+        console.log(`${userId} left ${data.channel}`);
+        break;
+
+      // ─── Topic Events ────────────────────────
+
+      case '$topic:subscribe':
+        state.topics.add(data.topic);
+        console.log(`${userId} subscribed to ${data.topic}`);
+        break;
+
+      case '$topic:unsubscribe':
+        state.topics.delete(data.topic);
+        break;
+
+      // ─── App Events ──────────────────────────
+
+      case 'chat.send':
+        // Broadcast to all clients in the same channel
+        const channel = data.roomId ? `chat:${data.roomId}` : null;
+        broadcastToChannel(channel, 'chat.message', {
+          id: crypto.randomUUID(),
+          userId: state.userId,
+          text: data.text,
+          timestamp: Date.now(),
+        });
+        break;
+
+      case 'chat.typing':
+        broadcastToChannel(`chat:${data.roomId}`, 'chat.typing', {
+          userId: state.userId,
+        }, ws);  // exclude sender
+        break;
+
+      default:
+        console.log('Unknown event:', event, data);
+    }
+  });
+
+  ws.on('close', () => {
+    clients.delete(ws);
+  });
+});
+
+// ─── Helpers ─────────────────────────────────────
+
+function send(ws: WebSocket, event: string, data: unknown) {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ event, data }));
+  }
+}
+
+function broadcastToChannel(
+  channel: string | null,
+  event: string,
+  data: unknown,
+  exclude?: WebSocket,
+) {
+  for (const [ws, state] of clients) {
+    if (ws === exclude) continue;
+    if (channel && !state.channels.has(channel)) continue;
+    send(ws, event, data);
+  }
+}
+
+function broadcastToTopic(topic: string, event: string, data: unknown) {
+  for (const [ws, state] of clients) {
+    if (!state.topics.has(topic)) continue;
+    send(ws, `${topic}:${event}`, data);
+  }
+}
+
+// ─── Example: Send notifications by topic ────────
+
+function notifyNewOrder(order: Order) {
+  broadcastToTopic('notifications:orders', 'new', {
+    id: order.id,
+    total: order.total,
+    customer: order.customerName,
+  });
+  // Only clients who called ws.subscribe('notifications:orders') receive this
+}
+```
+
+### Go — Server Example
+
+```go
+// Message format
+type Message struct {
+    Event string          `json:"event"`
+    Data  json.RawMessage `json:"data"`
+}
+
+// Handle incoming messages
+func handleMessage(conn *websocket.Conn, state *ClientState, msg Message) {
+    switch msg.Event {
+    case "$channel:join":
+        var payload struct{ Channel string `json:"channel"` }
+        json.Unmarshal(msg.Data, &payload)
+        state.Channels[payload.Channel] = true
+
+    case "$channel:leave":
+        var payload struct{ Channel string `json:"channel"` }
+        json.Unmarshal(msg.Data, &payload)
+        delete(state.Channels, payload.Channel)
+
+    case "$topic:subscribe":
+        var payload struct{ Topic string `json:"topic"` }
+        json.Unmarshal(msg.Data, &payload)
+        state.Topics[payload.Topic] = true
+
+    case "$topic:unsubscribe":
+        var payload struct{ Topic string `json:"topic"` }
+        json.Unmarshal(msg.Data, &payload)
+        delete(state.Topics, payload.Topic)
+
+    case "chat.send":
+        // broadcast to channel...
+
+    case "ping":
+        conn.WriteJSON(Message{Event: "pong"})
+    }
+}
+```
+
+### PHP (Laravel + Ratchet/Swoole) — Server Example
+
+```php
+// Handle incoming WebSocket message
+public function onMessage(ConnectionInterface $conn, $msg): void
+{
+    $data = json_decode($msg, true);
+    $event = $data['event'] ?? 'message';
+    $payload = $data['data'] ?? [];
+
+    match ($event) {
+        '$channel:join' => $this->joinChannel($conn, $payload['channel']),
+        '$channel:leave' => $this->leaveChannel($conn, $payload['channel']),
+        '$topic:subscribe' => $this->subscribeTopic($conn, $payload['topic']),
+        '$topic:unsubscribe' => $this->unsubscribeTopic($conn, $payload['topic']),
+        'chat.send' => $this->handleChatMessage($conn, $payload),
+        'ping' => $conn->send(json_encode(['type' => 'pong'])),
+        default => logger()->warning("Unknown event: {$event}"),
+    };
+}
+
+// Send to topic subscribers
+public function notifyTopic(string $topic, string $event, array $data): void
+{
+    foreach ($this->connections as $conn) {
+        if (in_array($topic, $this->topics[$conn->resourceId] ?? [])) {
+            $conn->send(json_encode([
+                'event' => "{$topic}:{$event}",
+                'data' => $data,
+            ]));
+        }
+    }
+}
+```
+
 ## Exported Types
 
 All types are available for import in your projects:
@@ -1116,9 +1456,9 @@ import {
   useSocketStatus,
   useSocketLifecycle,
   useChannel,
+  useTopics,
+  usePush,
 } from '@gwakko/shared-websocket/react';
-
-import type { SharedWebSocketProviderProps } from '@gwakko/shared-websocket/react';
 ```
 
 ```typescript
@@ -1133,7 +1473,9 @@ import {
   useSocketStatus,
   useSocketLifecycle,
   useChannel,
-  SharedWebSocketKey,       // InjectionKey for custom provide/inject
+  useTopics,
+  usePush,
+  SharedWebSocketKey,
 } from '@gwakko/shared-websocket/vue';
 ```
 
