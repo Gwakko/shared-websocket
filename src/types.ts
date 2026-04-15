@@ -1,7 +1,7 @@
 export type SocketState = 'connecting' | 'connected' | 'reconnecting' | 'closed';
 export type TabRole = 'leader' | 'follower';
 export type Unsubscribe = () => void;
-export type EventHandler<T = any> = (data: T) => void;
+export type EventHandler<T = unknown> = (data: T) => void;
 
 /** Type-safe event map. Keys are event names, values are payload types. */
 export type EventMap = Record<string, unknown>;

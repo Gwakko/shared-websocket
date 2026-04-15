@@ -9,7 +9,7 @@ import {
   createElement,
 } from 'react';
 import { SharedWebSocket } from '../SharedWebSocket';
-import type { SharedWebSocketOptions, TabRole, SocketLifecycleHandlers } from '../types';
+import type { SharedWebSocketOptions, TabRole, SocketLifecycleHandlers, EventHandler } from '../types';
 
 // ─── Context ─────────────────────────────────────────────
 
@@ -116,7 +116,7 @@ export function useSocketEvent<T>(event: string, callback?: (data: T) => void): 
   });
 
   useEffect(() => {
-    const unsub = socket.on(event, onEvent);
+    const unsub = socket.on(event, onEvent as EventHandler);
     return unsub;
   }, [socket, event]);
 
@@ -160,7 +160,7 @@ export function useSocketStream<T>(event: string, callback?: (data: T) => void):
 
   useEffect(() => {
     if (!callback) setItems([]);
-    const unsub = socket.on(event, onEvent);
+    const unsub = socket.on(event, onEvent as EventHandler);
     return unsub;
   }, [socket, event]);
 
@@ -238,7 +238,7 @@ export function useSocketCallback<T>(event: string, callback: (data: T) => void)
   });
 
   useEffect(() => {
-    const unsub = socket.on(event, handler);
+    const unsub = socket.on(event, handler as EventHandler);
     return unsub;
   }, [socket, event]);
 }

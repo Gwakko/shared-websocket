@@ -78,13 +78,15 @@ export function useSocketEvent<T>(event: string, callback?: (data: T) => void): 
   const socket = useSharedWebSocket();
   const value = ref<T | undefined>(undefined) as Ref<T | undefined>;
 
-  const unsub = socket.on(event, (data: T) => {
+  const handler = (data: unknown) => {
+    const typed = data as T;
     if (callback) {
-      callback(data);
+      callback(typed);
     } else {
-      value.value = data;
+      value.value = typed;
     }
-  });
+  };
+  const unsub = socket.on(event, handler);
 
   onUnmounted(unsub);
   return readonly(value) as Ref<T | undefined>;
@@ -117,13 +119,15 @@ export function useSocketStream<T>(event: string, callback?: (data: T) => void):
   const socket = useSharedWebSocket();
   const items = ref<T[]>([]) as Ref<T[]>;
 
-  const unsub = socket.on(event, (data: T) => {
+  const handler = (data: unknown) => {
+    const typed = data as T;
     if (callback) {
-      callback(data);
+      callback(typed);
     } else {
-      items.value = [...items.value, data];
+      items.value = [...items.value, typed];
     }
-  });
+  };
+  const unsub = socket.on(event, handler);
 
   onUnmounted(unsub);
   return readonly(items) as Ref<T[]>;
@@ -178,8 +182,8 @@ export function useSocketSync<T>(key: string, initialValue: T, callback?: (value
 export function useSocketCallback<T>(event: string, callback: (data: T) => void): void {
   const socket = useSharedWebSocket();
 
-  const unsub = socket.on(event, (data: T) => {
-    callback(data);
+  const unsub = socket.on(event, (data: unknown) => {
+    callback(data as T);
   });
 
   onUnmounted(unsub);

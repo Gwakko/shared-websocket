@@ -478,12 +478,92 @@ ws.on('any.custom.event', (data) => { /* data: any */ });
 ```
 
 ```tsx
-// React — Provider with typed events
-<SharedWebSocketProvider url="wss://..." options={{}} />
-
-// Hooks infer types when SharedWebSocket<Events> is in context
+// React — pass type to hooks
 const msg = useSocketEvent<Events['chat.message']>('chat.message');
 // msg: { text, userId, timestamp } | undefined
+```
+
+### Type narrowing for untyped events
+
+When working without EventMap, data is `unknown`. Use narrowing:
+
+```typescript
+// Type guard
+function isChatMessage(data: unknown): data is { text: string; userId: string } {
+  return typeof data === 'object' && data !== null && 'text' in data && 'userId' in data;
+}
+
+ws.on('chat.message', (data) => {
+  // data is unknown
+  if (isChatMessage(data)) {
+    console.log(data.text);  // ← now typed as string
+  }
+});
+```
+
+### Runtime validation with Zod
+
+```typescript
+import { z } from 'zod';
+
+const ChatMessageSchema = z.object({
+  text: z.string(),
+  userId: z.string(),
+  timestamp: z.number(),
+});
+
+type ChatMessage = z.infer<typeof ChatMessageSchema>;
+
+// Validate on receive — drop invalid messages via middleware
+ws.use('incoming', (raw) => {
+  const msg = raw as Record<string, unknown>;
+  const data = msg?.data;
+  const result = ChatMessageSchema.safeParse(data);
+  if (!result.success) {
+    console.warn('Invalid message:', result.error.issues);
+    return null;  // drop
+  }
+  return raw;  // pass through
+});
+
+// Or validate in handler
+ws.on('chat.message', (data) => {
+  const result = ChatMessageSchema.safeParse(data);
+  if (!result.success) return;
+
+  const msg: ChatMessage = result.data;
+  console.log(msg.text);  // fully typed and validated
+});
+
+// Zod middleware factory (reusable)
+function zodValidate<T>(schema: z.ZodType<T>): Middleware {
+  return (raw) => {
+    const msg = raw as Record<string, unknown>;
+    const result = schema.safeParse(msg?.data ?? msg);
+    return result.success ? raw : null;
+  };
+}
+
+ws.use('incoming', zodValidate(ChatMessageSchema));
+ws.use('incoming', zodValidate(OrderSchema));
+```
+
+```tsx
+// React — Zod validated hook
+function useSafeSocketEvent<T>(event: string, schema: z.ZodType<T>): T | undefined {
+  const [value, setValue] = useState<T>();
+
+  useSocketEvent(event, (data) => {
+    const result = schema.safeParse(data);
+    if (result.success) setValue(result.data);
+  });
+
+  return value;
+}
+
+// Usage
+const msg = useSafeSocketEvent('chat.message', ChatMessageSchema);
+// msg: ChatMessage | undefined — guaranteed valid
 ```
 
 ## Middleware

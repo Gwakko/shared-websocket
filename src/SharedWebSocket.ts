@@ -213,14 +213,16 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
   /** Subscribe to server events (works in ALL tabs). Type-safe with EventMap. */
   on<K extends string & keyof TEvents>(event: K, handler: EventHandler<TEvents[K]>): Unsubscribe;
-  on(event: string, handler: EventHandler): Unsubscribe;
-  on(event: string, handler: EventHandler): Unsubscribe {
+  on(event: string, handler: EventHandler<unknown>): Unsubscribe;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on(event: string, handler: (data: any) => void): Unsubscribe {
     return this.subs.on(event, handler);
   }
 
   once<K extends string & keyof TEvents>(event: K, handler: EventHandler<TEvents[K]>): Unsubscribe;
-  once(event: string, handler: EventHandler): Unsubscribe;
-  once(event: string, handler: EventHandler): Unsubscribe {
+  once(event: string, handler: EventHandler<unknown>): Unsubscribe;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  once(event: string, handler: (data: any) => void): Unsubscribe {
     return this.subs.once(event, handler);
   }
 
@@ -360,8 +362,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.log.info('[SharedWS] 👑 became leader');
     this.socket = this.createSocket();
 
-    this.socket.onMessage((raw: any) => {
-      let data = raw;
+    this.socket.onMessage((raw: unknown) => {
+      let data: unknown = raw;
       for (const mw of this.incomingMiddleware) {
         data = mw(data);
         if (data === null) {
@@ -370,8 +372,9 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         }
       }
 
-      const event = data?.[this.proto.eventField] ?? this.proto.defaultEvent;
-      const payload = data?.[this.proto.dataField] ?? data;
+      const msg = data as Record<string, unknown> | null | undefined;
+      const event = (msg?.[this.proto.eventField] as string) ?? this.proto.defaultEvent;
+      const payload = msg?.[this.proto.dataField] ?? data;
       this.log.debug('[SharedWS] ← recv', event, payload);
       this.bus.broadcast('ws:message', { event, data: payload });
     });
@@ -394,10 +397,11 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.cleanups.push(
       this.bus.respond<{ event: string; data: unknown }, unknown>('ws:request', async (req) => {
         return new Promise((resolve) => {
-          const unsub = this.socket!.onMessage((response: any) => {
-            if (response?.event === req.event || response?.requestId) {
+          const unsub = this.socket!.onMessage((response: unknown) => {
+            const res = response as Record<string, unknown> | undefined;
+            if (res?.[this.proto.eventField] === req.event || res?.requestId) {
               unsub();
-              resolve(response?.data ?? response);
+              resolve(res?.[this.proto.dataField] ?? response);
             }
           });
           this.socket!.send({ event: req.event, data: req.data });
