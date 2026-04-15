@@ -1121,61 +1121,112 @@ Server receives `$topic:subscribe` / `$topic:unsubscribe` events (configurable v
 
 ## Push Notifications
 
-Built-in browser Notification API integration. Shows only from leader tab (prevents N duplicates for N tabs):
+Two modes: **custom render** (sonner, react-hot-toast, your UI) and/or **browser Notification API**. Both respect `leaderOnly` + `onlyWhenHidden` to prevent duplicates across tabs.
+
+### Custom Render — you control the display
 
 ```typescript
-// Vanilla
+// Vanilla — sonner toast
+import { toast } from 'sonner';
+
+ws.push('notification', {
+  render: (n) => toast(n.title, { description: n.body }),
+});
+
+ws.push('order.created', {
+  render: (order) => toast.success(`New Order #${order.id}`, {
+    description: `$${order.total} from ${order.customer}`,
+    action: { label: 'View', onClick: () => navigate(`/orders/${order.id}`) },
+  }),
+});
+```
+
+```tsx
+// React — sonner
+import { toast } from 'sonner';
+
+function NotificationSetup() {
+  usePush('notification', {
+    render: (n) => toast(n.title, { description: n.body }),
+  });
+
+  usePush('order.created', {
+    render: (order) => toast.success(`Order #${order.id} — $${order.total}`),
+  });
+
+  return null;
+}
+
+// React — react-hot-toast
+import hotToast from 'react-hot-toast';
+
+function NotificationSetup() {
+  usePush('notification', {
+    render: (n) => hotToast(n.title),
+  });
+  return null;
+}
+```
+
+```vue
+<!-- Vue — sonner-vue -->
+<script setup>
+import { toast } from 'sonner-vue';
+
+usePush('notification', {
+  render: (n) => toast(n.title, { description: n.body }),
+});
+
+usePush('order.created', {
+  render: (order) => toast.success(`Order #${order.id} — $${order.total}`),
+});
+</script>
+```
+
+### Browser Notification API — native OS notifications
+
+```typescript
+// Vanilla — browser native (no render needed)
 ws.push('notification', {
   title: (n) => n.title,
   body: (n) => n.body,
   icon: '/icons/bell.png',
   tag: (n) => `notif-${n.id}`,  // deduplication
   onClick: (n) => window.open(n.url),
-});
-
-ws.push('order.created', {
-  title: (order) => `New Order #${order.id}`,
-  body: (order) => `$${order.total} from ${order.customer}`,
-  icon: '/icons/order.png',
-  tag: (order) => `order-${order.id}`,
-  leaderOnly: true,       // default: true — only leader shows notification
-  onlyWhenHidden: true,   // default: true — only when tab is in background
+  leaderOnly: true,       // default: true
+  onlyWhenHidden: true,   // default: true
 });
 ```
 
 ```tsx
-// React — auto-cleanup on unmount
-function NotificationPush() {
-  usePush('notification', {
-    title: (n) => n.title,
-    body: (n) => n.body,
-    icon: '/icons/bell.png',
-  });
-
-  usePush('order.created', {
-    title: (order) => `New Order #${order.id}`,
-    body: (order) => `$${order.total}`,
-    onClick: (order) => navigate(`/orders/${order.id}`),
-  });
-
-  return null;  // no UI — just push notifications
-}
+// React
+usePush('order.created', {
+  title: (order) => `New Order #${order.id}`,
+  body: (order) => `$${order.total}`,
+  icon: '/icons/order.png',
+  onClick: (order) => navigate(`/orders/${order.id}`),
+});
 ```
 
 ```vue
 <!-- Vue -->
 <script setup>
-usePush('notification', {
-  title: (n) => n.title,
-  body: (n) => n.body,
-  icon: '/icons/bell.png',
-});
-
 usePush('order.created', {
   title: (order) => `New Order #${order.id}`,
   body: (order) => `$${order.total}`,
 });
 </script>
+```
+
+### Both — toast in UI + browser notification
+
+```typescript
+// Show sonner toast AND browser notification
+ws.push('order.created', {
+  render: (order) => toast.success(`Order #${order.id}`),  // in-app toast
+  title: (order) => `New Order #${order.id}`,              // + native notification
+  body: (order) => `$${order.total}`,
+});
 ```
 
 ## Server-Side Implementation Guide
