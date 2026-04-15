@@ -493,12 +493,28 @@ function isChatMessage(data: unknown): data is { text: string; userId: string } 
   return typeof data === 'object' && data !== null && 'text' in data && 'userId' in data;
 }
 
+// Vanilla
 ws.on('chat.message', (data) => {
-  // data is unknown
   if (isChatMessage(data)) {
     console.log(data.text);  // ← now typed as string
   }
 });
+```
+
+```tsx
+// React
+useSocketEvent('chat.message', (data) => {
+  if (isChatMessage(data)) renderMessage(data);
+});
+```
+
+```vue
+<!-- Vue -->
+<script setup>
+useSocketEvent('chat.message', (data) => {
+  if (isChatMessage(data)) renderMessage(data);
+});
+</script>
 ```
 
 ### Runtime validation with Zod
@@ -566,6 +582,31 @@ const msg = useSafeSocketEvent('chat.message', ChatMessageSchema);
 // msg: ChatMessage | undefined — guaranteed valid
 ```
 
+```vue
+<!-- Vue — Zod validated composable -->
+<script setup lang="ts">
+import { z } from 'zod';
+
+const ChatMessageSchema = z.object({
+  text: z.string(),
+  userId: z.string(),
+});
+
+// Composable with validation
+function useSafeSocketEvent<T>(event: string, schema: z.ZodType<T>) {
+  const value = ref<T>();
+  useSocketEvent(event, (data) => {
+    const result = schema.safeParse(data);
+    if (result.success) value.value = result.data as T;
+  });
+  return readonly(value);
+}
+
+const msg = useSafeSocketEvent('chat.message', ChatMessageSchema);
+// msg.value: ChatMessage | undefined — guaranteed valid
+</script>
+```
+
 ## Middleware
 
 Transform or inspect messages before send / after receive:
@@ -591,6 +632,48 @@ ws.use('outgoing', addTimestamp)
   .use('outgoing', addRequestId)
   .use('incoming', decryptPayload)
   .use('incoming', validateSchema);
+```
+
+```tsx
+// React — configure middleware in Provider
+function App() {
+  const wsRef = useRef<SharedWebSocket>();
+
+  return (
+    <SharedWebSocketProvider
+      url="wss://api.example.com/ws"
+      options={{ debug: true }}
+      ref={(provider) => {
+        // Access ws instance after mount to add middleware
+      }}
+    >
+      <SetupMiddleware />
+      <Dashboard />
+    </SharedWebSocketProvider>
+  );
+}
+
+// Or setup middleware in a component
+function SetupMiddleware() {
+  const ws = useSharedWebSocket();
+
+  useEffect(() => {
+    ws.use('outgoing', (msg) => ({ ...msg, timestamp: Date.now() }));
+    ws.use('incoming', zodValidate(MessageSchema));
+  }, [ws]);
+
+  return null;
+}
+```
+
+```vue
+<!-- Vue — configure middleware after plugin install -->
+<script setup>
+// In any component
+const ws = useSharedWebSocket();
+ws.use('outgoing', (msg) => ({ ...msg, timestamp: Date.now() }));
+ws.use('incoming', zodValidate(MessageSchema));
+</script>
 ```
 
 ## Debug Mode & Custom Logger
@@ -642,6 +725,30 @@ new SharedWebSocket(url, {
 // Logger interface — implement debug/info/warn/error
 import type { Logger } from '@gwakko/shared-websocket';
 const myLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+```
+
+```tsx
+// React — debug + Sentry in Provider
+<SharedWebSocketProvider
+  url="wss://api.example.com/ws"
+  options={{
+    debug: process.env.NODE_ENV === 'development',
+    logger: sentryLogger,  // your Sentry logger object
+  }}
+>
+  <App />
+</SharedWebSocketProvider>
+```
+
+```vue
+<!-- Vue — debug + Sentry in plugin -->
+<script>
+// main.ts
+app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
+  debug: import.meta.env.DEV,
+  logger: sentryLogger,
+}));
+</script>
 ```
 
 ## Custom Event Protocol
