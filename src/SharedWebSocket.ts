@@ -536,6 +536,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       auth: this.options.auth,
       authToken: this.options.authToken,
       authParam: this.options.authParam,
+      serialize: this.options.serialize,
+      deserialize: this.options.deserialize,
     });
   }
 

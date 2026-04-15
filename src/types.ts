@@ -73,6 +73,22 @@ export interface SharedWebSocketOptions<TEvents extends EventMap = EventMap> {
   debug?: boolean;
   /** Custom logger (default: console). Supports any logger with debug/info/warn/error. */
   logger?: Logger;
+  /**
+   * Custom serializer for outgoing messages (default: JSON.stringify).
+   * Use for MessagePack, Protobuf, or any binary format.
+   */
+  serialize?: (data: unknown) => string | ArrayBuffer | Blob;
+  /**
+   * Custom deserializer for incoming messages (default: JSON.parse).
+   * Receives raw WebSocket data (string or ArrayBuffer).
+   */
+  deserialize?: (raw: string | ArrayBuffer) => unknown;
+}
+
+/** Serializer/Deserializer pair. */
+export interface Codec {
+  serialize: (data: unknown) => string | ArrayBuffer | Blob;
+  deserialize: (raw: string | ArrayBuffer) => unknown;
 }
 
 /** Configurable event names and field mappings for server protocol. */

@@ -25,4 +25,5 @@ export type {
   Logger,
   Middleware,
   PushNotificationOptions,
+  Codec,
 } from './types';

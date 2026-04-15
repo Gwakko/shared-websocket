@@ -13,6 +13,10 @@ interface SharedSocketOptions {
   authParam?: string;
   /** Heartbeat payload (default: { type: "ping" }). */
   pingPayload?: unknown;
+  /** Custom serializer (default: JSON.stringify). */
+  serialize?: (data: unknown) => string | ArrayBuffer | Blob;
+  /** Custom deserializer (default: JSON.parse). */
+  deserialize?: (raw: string | ArrayBuffer) => unknown;
 }
 
 export class SharedSocket implements Disposable {
@@ -26,11 +30,13 @@ export class SharedSocket implements Disposable {
   private onMessageFns = new Set<EventHandler>();
   private onStateChangeFns = new Set<(state: SocketState) => void>();
 
-  private readonly opts: Required<Omit<SharedSocketOptions, 'auth' | 'authToken' | 'authParam' | 'pingPayload'>> & {
+  private readonly opts: Required<Omit<SharedSocketOptions, 'auth' | 'authToken' | 'authParam' | 'pingPayload' | 'serialize' | 'deserialize'>> & {
     auth?: () => string | Promise<string>;
     authToken?: string;
     authParam: string;
     pingPayload: unknown;
+    serialize: (data: unknown) => string | ArrayBuffer | Blob;
+    deserialize: (raw: string | ArrayBuffer) => unknown;
   };
 
   constructor(
@@ -47,6 +53,12 @@ export class SharedSocket implements Disposable {
       authToken: options.authToken,
       authParam: options.authParam ?? 'token',
       pingPayload: options.pingPayload ?? { type: 'ping' },
+      serialize: options.serialize ?? ((data: unknown) => JSON.stringify(data)),
+      deserialize: options.deserialize ?? ((raw: string | ArrayBuffer) => {
+        if (typeof raw === 'string') return JSON.parse(raw);
+        // ArrayBuffer → decode as UTF-8 then parse
+        return JSON.parse(new TextDecoder().decode(raw));
+      }),
     };
   }
 
@@ -71,7 +83,7 @@ export class SharedSocket implements Disposable {
     this.ws.onmessage = (ev: MessageEvent) => {
       let data: unknown;
       try {
-        data = JSON.parse(ev.data as string);
+        data = this.opts.deserialize(ev.data as string | ArrayBuffer);
       } catch {
         data = ev.data;
       }
@@ -112,7 +124,7 @@ export class SharedSocket implements Disposable {
 
   send(data: unknown): void {
     if (this._state === 'connected' && this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(data));
+      this.ws.send(this.opts.serialize(data));
     } else if (this._state === 'reconnecting' || this._state === 'connecting') {
       if (this.buffer.length < this.opts.sendBuffer) {
         this.buffer.push(data);
@@ -156,7 +168,7 @@ export class SharedSocket implements Disposable {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify(this.opts.pingPayload));
+        this.ws.send(this.opts.serialize(this.opts.pingPayload));
       }
     }, this.opts.heartbeatInterval);
   }

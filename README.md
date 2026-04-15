@@ -23,6 +23,7 @@ Share ONE WebSocket connection across multiple browser tabs. Zero dependencies. 
   - [Runtime validation with Zod](#runtime-validation-with-zod)
 - [Middleware](#middleware)
 - [Debug Mode & Custom Logger](#debug-mode--custom-logger)
+- [Custom Serialization](#custom-serialization)
 - [Custom Event Protocol](#custom-event-protocol)
 - [Advanced Examples](#advanced-examples)
   - [Stream](#stream--consume-events-as-async-iterator)
@@ -343,6 +344,8 @@ Callback receives `{ ws, signal }` — destructure what you need. Signal aborts 
 | `electionTimeout` | `number` | `200` | Leader election timeout (ms) |
 | `leaderHeartbeat` | `number` | `2000` | Leader heartbeat interval (ms) |
 | `leaderTimeout` | `number` | `5000` | Leader absence timeout (ms) |
+| `serialize` | `(data) => string \| ArrayBuffer` | `JSON.stringify` | Custom outgoing serializer |
+| `deserialize` | `(raw) => unknown` | `JSON.parse` | Custom incoming deserializer |
 
 ### Authentication
 
@@ -788,6 +791,89 @@ app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
 }));
 </script>
 ```
+
+## Custom Serialization
+
+By default all messages are serialized/deserialized as JSON. Override for binary formats:
+
+```typescript
+// Default — JSON (no config needed)
+new SharedWebSocket(url);
+// send: JSON.stringify(data) → string
+// recv: JSON.parse(raw) → object
+```
+
+```typescript
+// MessagePack — compact binary format
+import { encode, decode } from '@msgpack/msgpack';
+
+new SharedWebSocket(url, {
+  serialize: (data) => encode(data),    // returns ArrayBuffer
+  deserialize: (raw) => decode(raw),    // accepts ArrayBuffer
+});
+```
+
+```typescript
+// Protobuf
+import { MyMessage } from './proto/messages';
+
+new SharedWebSocket(url, {
+  serialize: (data) => MyMessage.encode(data as MyMessage).finish(),
+  deserialize: (raw) => MyMessage.decode(new Uint8Array(raw as ArrayBuffer)),
+});
+```
+
+```typescript
+// CBOR
+import { encode, decode } from 'cbor-x';
+
+new SharedWebSocket(url, {
+  serialize: (data) => encode(data),
+  deserialize: (raw) => decode(raw as ArrayBuffer),
+});
+```
+
+```typescript
+// Plain text (no serialization)
+new SharedWebSocket(url, {
+  serialize: (data) => String(data),
+  deserialize: (raw) => raw,  // pass through as-is
+});
+```
+
+```tsx
+// React — pass in Provider options
+<SharedWebSocketProvider
+  url="wss://api.example.com/ws"
+  options={{
+    serialize: (data) => encode(data),
+    deserialize: (raw) => decode(raw),
+  }}
+>
+  <App />
+</SharedWebSocketProvider>
+```
+
+```vue
+<!-- Vue — pass in plugin options -->
+<script>
+import { encode, decode } from '@msgpack/msgpack';
+
+app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
+  serialize: (data) => encode(data),
+  deserialize: (raw) => decode(raw),
+}));
+</script>
+```
+
+Serialization applies to **all** WebSocket I/O: send, receive, heartbeat, and buffer flush.
+
+| Option | Default | Type | Description |
+|--------|---------|------|-------------|
+| `serialize` | `JSON.stringify` | `(data) => string \| ArrayBuffer \| Blob` | Outgoing message encoding |
+| `deserialize` | `JSON.parse` | `(raw) => unknown` | Incoming message decoding |
+
+> **Note:** When using `useWorker: true`, the Worker still uses JSON internally. Custom serialize/deserialize only applies to the main-thread SharedSocket. For binary in Worker mode, provide a custom `workerUrl` with your serialization logic.
 
 ## Custom Event Protocol
 
