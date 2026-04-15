@@ -1,8 +1,24 @@
+// Core
 export { SharedWebSocket } from './SharedWebSocket';
-export { withSocket, type WithSocketCallback, type WithSocketOptions, type SocketScope } from './withSocket';
+export { withSocket } from './withSocket';
+
+// Internal components (for advanced usage)
 export { MessageBus } from './MessageBus';
 export { TabCoordinator } from './TabCoordinator';
 export { SharedSocket } from './SharedSocket';
 export { WorkerSocket } from './WorkerSocket';
 export { SubscriptionManager } from './SubscriptionManager';
-export type { SharedWebSocketOptions, SocketState, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol } from './types';
+
+// Types
+export type { WithSocketCallback, WithSocketOptions, SocketScope } from './withSocket';
+export type {
+  SharedWebSocketOptions,
+  SocketState,
+  TabRole,
+  Unsubscribe,
+  EventHandler,
+  Channel,
+  EventProtocol,
+  BusMessage,
+  SocketLifecycleHandlers,
+} from './types';

@@ -9,7 +9,7 @@ import {
   createElement,
 } from 'react';
 import { SharedWebSocket } from '../SharedWebSocket';
-import type { SharedWebSocketOptions, TabRole } from '../types';
+import type { SharedWebSocketOptions, TabRole, SocketLifecycleHandlers } from '../types';
 
 // ─── Context ─────────────────────────────────────────────
 
@@ -283,13 +283,7 @@ export function useSocketStatus(): {
  *   onError: (err) => reportError(err),
  * });
  */
-export function useSocketLifecycle(handlers: {
-  onConnect?: () => void;
-  onDisconnect?: () => void;
-  onReconnecting?: () => void;
-  onLeaderChange?: (isLeader: boolean) => void;
-  onError?: (error: unknown) => void;
-}): void {
+export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
   const socket = useSharedWebSocket();
 
   const onConnect = useEffectEvent(() => handlers.onConnect?.());

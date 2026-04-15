@@ -64,6 +64,15 @@ export interface EventProtocol {
   defaultEvent: string;
 }
 
+/** Lifecycle event handlers for useSocketLifecycle / onConnect / etc. */
+export interface SocketLifecycleHandlers {
+  onConnect?: () => void;
+  onDisconnect?: () => void;
+  onReconnecting?: () => void;
+  onLeaderChange?: (isLeader: boolean) => void;
+  onError?: (error: unknown) => void;
+}
+
 /** Scoped channel handle for private/topic-based subscriptions. */
 export interface Channel {
   readonly name: string;

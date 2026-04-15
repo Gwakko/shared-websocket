@@ -730,6 +730,93 @@ wss.on('connection', (ws) => {
 });
 ```
 
+## Exported Types
+
+All types are available for import in your projects:
+
+```typescript
+import type {
+  // Core
+  SharedWebSocketOptions,  // constructor options
+  SocketState,             // 'connecting' | 'connected' | 'reconnecting' | 'closed'
+  TabRole,                 // 'leader' | 'follower'
+  Unsubscribe,             // () => void
+  EventHandler,            // (data: any) => void
+
+  // Channels
+  Channel,                 // scoped channel handle from ws.channel()
+  EventProtocol,           // custom event/field names
+
+  // Lifecycle
+  SocketLifecycleHandlers, // { onConnect?, onDisconnect?, onReconnecting?, ... }
+
+  // withSocket
+  SocketScope,             // { ws, signal } — callback argument
+  WithSocketOptions,       // extends SharedWebSocketOptions + signal
+  WithSocketCallback,      // (scope: SocketScope) => void | Promise<void>
+
+  // Internal (advanced)
+  BusMessage,              // BroadcastChannel message envelope
+} from '@gwakko/shared-websocket';
+```
+
+```tsx
+// React — all hooks + types
+import {
+  SharedWebSocketProvider,
+  useSharedWebSocket,
+  useSocketEvent,
+  useSocketStream,
+  useSocketSync,
+  useSocketCallback,
+  useSocketStatus,
+  useSocketLifecycle,
+  useChannel,
+} from '@gwakko/shared-websocket/react';
+
+import type { SharedWebSocketProviderProps } from '@gwakko/shared-websocket/react';
+```
+
+```typescript
+// Vue — all composables + types
+import {
+  createSharedWebSocketPlugin,
+  useSharedWebSocket,
+  useSocketEvent,
+  useSocketStream,
+  useSocketSync,
+  useSocketCallback,
+  useSocketStatus,
+  useSocketLifecycle,
+  useChannel,
+  SharedWebSocketKey,       // InjectionKey for custom provide/inject
+} from '@gwakko/shared-websocket/vue';
+```
+
+### Usage with custom types
+
+```typescript
+import type { Channel, SocketLifecycleHandlers, EventProtocol } from '@gwakko/shared-websocket';
+
+// Type your channel
+const chat: Channel = ws.channel('chat:room_1');
+
+// Type lifecycle handlers separately
+const handlers: SocketLifecycleHandlers = {
+  onConnect: () => setStatus('online'),
+  onDisconnect: () => setStatus('offline'),
+};
+useSocketLifecycle(handlers);
+
+// Type your protocol config
+const protocol: Partial<EventProtocol> = {
+  eventField: 'type',
+  dataField: 'payload',
+  channelJoin: 'subscribe',
+};
+new SharedWebSocket(url, { events: protocol });
+```
+
 ## Browser Support
 
 | API | Chrome | Firefox | Safari | Edge |
