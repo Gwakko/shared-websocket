@@ -11,6 +11,8 @@ interface SharedSocketOptions {
   auth?: () => string | Promise<string>;
   authToken?: string;
   authParam?: string;
+  /** Heartbeat payload (default: { type: "ping" }). */
+  pingPayload?: unknown;
 }
 
 export class SharedSocket implements Disposable {
@@ -24,10 +26,11 @@ export class SharedSocket implements Disposable {
   private onMessageFns = new Set<EventHandler>();
   private onStateChangeFns = new Set<(state: SocketState) => void>();
 
-  private readonly opts: Required<Omit<SharedSocketOptions, 'auth' | 'authToken' | 'authParam'>> & {
+  private readonly opts: Required<Omit<SharedSocketOptions, 'auth' | 'authToken' | 'authParam' | 'pingPayload'>> & {
     auth?: () => string | Promise<string>;
     authToken?: string;
     authParam: string;
+    pingPayload: unknown;
   };
 
   constructor(
@@ -43,6 +46,7 @@ export class SharedSocket implements Disposable {
       auth: options.auth,
       authToken: options.authToken,
       authParam: options.authParam ?? 'token',
+      pingPayload: options.pingPayload ?? { type: 'ping' },
     };
   }
 
@@ -152,7 +156,7 @@ export class SharedSocket implements Disposable {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'ping' }));
+        this.ws.send(JSON.stringify(this.opts.pingPayload));
       }
     }, this.opts.heartbeatInterval);
   }

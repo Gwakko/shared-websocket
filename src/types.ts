@@ -31,6 +31,37 @@ export interface SharedWebSocketOptions {
   useWorker?: boolean;
   /** Custom worker URL (if useWorker is true and you want to provide your own worker file). */
   workerUrl?: string | URL;
+  /**
+   * Override event/field names sent over WebSocket.
+   * Useful when your server uses different naming conventions.
+   *
+   * @example
+   * // Default
+   * events: {
+   *   eventField: 'event',       // { event: 'chat.message', data: ... }
+   *   dataField: 'data',         // { event: ..., data: { text: 'hi' } }
+   *   channelJoin: 'subscribe',  // sent when ws.channel('room') is called
+   *   channelLeave: 'unsubscribe',
+   *   ping: { type: 'ping' },    // heartbeat payload
+   * }
+   */
+  events?: Partial<EventProtocol>;
+}
+
+/** Configurable event names and field mappings for server protocol. */
+export interface EventProtocol {
+  /** Field name for event type in messages (default: "event"). */
+  eventField: string;
+  /** Field name for payload in messages (default: "data"). */
+  dataField: string;
+  /** Event name sent when joining a channel (default: "$channel:join"). */
+  channelJoin: string;
+  /** Event name sent when leaving a channel (default: "$channel:leave"). */
+  channelLeave: string;
+  /** Heartbeat payload sent to keep connection alive (default: { type: "ping" }). */
+  ping: unknown;
+  /** Fallback event name when message has no event field (default: "message"). */
+  defaultEvent: string;
 }
 
 /** Scoped channel handle for private/topic-based subscriptions. */

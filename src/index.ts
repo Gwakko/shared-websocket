@@ -5,4 +5,4 @@ export { TabCoordinator } from './TabCoordinator';
 export { SharedSocket } from './SharedSocket';
 export { WorkerSocket } from './WorkerSocket';
 export { SubscriptionManager } from './SubscriptionManager';
-export type { SharedWebSocketOptions, SocketState, TabRole, Unsubscribe, EventHandler, Channel } from './types';
+export type { SharedWebSocketOptions, SocketState, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol } from './types';

@@ -441,6 +441,66 @@ const ws = new SharedWebSocket(url, { useWorker: true });
 // API is identical — only internal transport changes
 ```
 
+## Custom Event Protocol
+
+Override event/field names when your server uses different conventions.
+
+```typescript
+// Default: { event: 'chat.message', data: { text: 'hi' } }
+new SharedWebSocket(url);
+
+// Socket.IO style: { type: 'chat.message', payload: { text: 'hi' } }
+new SharedWebSocket(url, {
+  events: {
+    eventField: 'type',       // message field for event name
+    dataField: 'payload',     // message field for payload
+  },
+});
+
+// Phoenix/Elixir style: join/leave events + custom ping
+new SharedWebSocket(url, {
+  events: {
+    channelJoin: 'phx_join',
+    channelLeave: 'phx_leave',
+    ping: { event: 'heartbeat', payload: {} },
+  },
+});
+
+// Laravel Echo / Pusher style
+new SharedWebSocket(url, {
+  events: {
+    eventField: 'event',
+    dataField: 'data',
+    channelJoin: 'pusher:subscribe',
+    channelLeave: 'pusher:unsubscribe',
+    ping: { event: 'pusher:ping', data: {} },
+  },
+});
+
+// Action Cable (Rails) style
+new SharedWebSocket(url, {
+  events: {
+    eventField: 'type',
+    dataField: 'message',
+    channelJoin: 'subscribe',
+    channelLeave: 'unsubscribe',
+    ping: { type: 'ping' },
+    defaultEvent: 'message',
+  },
+});
+```
+
+All fields in `events` are optional — override only what differs from defaults.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `eventField` | `"event"` | Message field name for event type |
+| `dataField` | `"data"` | Message field name for payload |
+| `channelJoin` | `"$channel:join"` | Event sent when joining a channel |
+| `channelLeave` | `"$channel:leave"` | Event sent when leaving a channel |
+| `ping` | `{ type: "ping" }` | Heartbeat payload |
+| `defaultEvent` | `"message"` | Fallback event when message has no event field |
+
 ## Advanced Examples
 
 ### Stream — consume events as async iterator

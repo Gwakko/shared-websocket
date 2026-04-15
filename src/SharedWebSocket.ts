@@ -5,7 +5,16 @@ import { TabCoordinator } from './TabCoordinator';
 import { SharedSocket } from './SharedSocket';
 import { WorkerSocket } from './WorkerSocket';
 import { SubscriptionManager } from './SubscriptionManager';
-import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel } from './types';
+import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol } from './types';
+
+const DEFAULT_PROTOCOL: EventProtocol = {
+  eventField: 'event',
+  dataField: 'data',
+  channelJoin: '$channel:join',
+  channelLeave: '$channel:leave',
+  ping: { type: 'ping' },
+  defaultEvent: 'message',
+};
 
 /** Common interface for both SharedSocket and WorkerSocket. */
 interface SocketAdapter {
@@ -34,11 +43,13 @@ export class SharedWebSocket implements Disposable {
   private tabId: string;
   private cleanups: Unsubscribe[] = [];
   private disposed = false;
+  private readonly proto: EventProtocol;
 
   constructor(
     private readonly url: string,
     private readonly options: SharedWebSocketOptions = {},
   ) {
+    this.proto = { ...DEFAULT_PROTOCOL, ...options.events };
     this.tabId = generateId();
     this.bus = new MessageBus('shared-ws', this.tabId);
     this.coordinator = new TabCoordinator(this.bus, this.tabId, {
@@ -58,7 +69,7 @@ export class SharedWebSocket implements Disposable {
     this.cleanups.push(
       this.bus.subscribe<{ event: string; data: unknown }>('ws:send', (msg) => {
         if (this.coordinator.isLeader && this.socket) {
-          this.socket.send({ event: msg.event, data: msg.data });
+          this.socket.send({ [this.proto.eventField]: msg.event, [this.proto.dataField]: msg.data });
         }
       }),
     );
@@ -174,8 +185,9 @@ export class SharedWebSocket implements Disposable {
 
   /** Send message to server (auto-routed through leader). */
   send(event: string, data: unknown): void {
+    const payload = { [this.proto.eventField]: event, [this.proto.dataField]: data };
     if (this.coordinator.isLeader && this.socket) {
-      this.socket.send({ event, data });
+      this.socket.send(payload);
     } else {
       this.bus.publish('ws:send', { event, data });
     }
@@ -217,7 +229,7 @@ export class SharedWebSocket implements Disposable {
    */
   channel(name: string): Channel {
     // Notify server about channel subscription
-    this.send('$channel:join', { channel: name });
+    this.send(this.proto.channelJoin, { channel: name });
 
     const self = this;
     const unsubs: Unsubscribe[] = [];
@@ -241,7 +253,7 @@ export class SharedWebSocket implements Disposable {
         return self.subs.stream(`${name}:${event}`, signal);
       },
       leave(): void {
-        self.send('$channel:leave', { channel: name });
+        self.send(self.proto.channelLeave, { channel: name });
         for (const unsub of unsubs) unsub();
         unsubs.length = 0;
       },
@@ -259,6 +271,7 @@ export class SharedWebSocket implements Disposable {
       reconnectMaxDelay: this.options.reconnectMaxDelay,
       heartbeatInterval: this.options.heartbeatInterval,
       sendBuffer: this.options.sendBuffer,
+      pingPayload: this.proto.ping,
     };
 
     if (this.options.useWorker) {
@@ -282,8 +295,8 @@ export class SharedWebSocket implements Disposable {
     this.socket = this.createSocket();
 
     this.socket.onMessage((data: any) => {
-      const event = data?.event ?? 'message';
-      const payload = data?.data ?? data;
+      const event = data?.[this.proto.eventField] ?? this.proto.defaultEvent;
+      const payload = data?.[this.proto.dataField] ?? data;
       this.bus.broadcast('ws:message', { event, data: payload });
     });
 
