@@ -21,4 +21,7 @@ export type {
   EventProtocol,
   BusMessage,
   SocketLifecycleHandlers,
+  EventMap,
+  Logger,
+  Middleware,
 } from './types';

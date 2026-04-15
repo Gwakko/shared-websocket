@@ -441,6 +441,129 @@ const ws = new SharedWebSocket(url, { useWorker: true });
 // API is identical — only internal transport changes
 ```
 
+## Typed Events
+
+Define your event map for full type safety across on/send/stream:
+
+```typescript
+type Events = {
+  'chat.message': { text: string; userId: string; timestamp: number };
+  'chat.typing': { userId: string };
+  'order.created': { id: string; total: number; items: string[] };
+  'notification': { title: string; body: string; type: 'info' | 'error' };
+};
+
+const ws = new SharedWebSocket<Events>('wss://api.example.com/ws');
+
+// ✅ Type-safe — msg is { text, userId, timestamp }
+ws.on('chat.message', (msg) => {
+  console.log(msg.text);     // string
+  console.log(msg.userId);   // string
+});
+
+// ✅ Type-safe send
+ws.send('chat.message', { text: 'hi', userId: '1', timestamp: Date.now() });
+
+// ❌ TypeScript error — wrong payload type
+ws.send('chat.message', { wrong: 'field' });
+
+// ✅ Type-safe stream
+for await (const order of ws.stream('order.created')) {
+  console.log(order.id);   // string
+  console.log(order.total); // number
+}
+
+// Still works with untyped events
+ws.on('any.custom.event', (data) => { /* data: any */ });
+```
+
+```tsx
+// React — Provider with typed events
+<SharedWebSocketProvider url="wss://..." options={{}} />
+
+// Hooks infer types when SharedWebSocket<Events> is in context
+const msg = useSocketEvent<Events['chat.message']>('chat.message');
+// msg: { text, userId, timestamp } | undefined
+```
+
+## Middleware
+
+Transform or inspect messages before send / after receive:
+
+```typescript
+const ws = new SharedWebSocket(url);
+
+// Add timestamp to every outgoing message
+ws.use('outgoing', (msg) => ({ ...msg, timestamp: Date.now() }));
+
+// Decrypt incoming messages
+ws.use('incoming', (msg) => ({ ...msg, data: decrypt(msg.data) }));
+
+// Drop messages from blocked users (return null to drop)
+ws.use('incoming', (msg) => blockedUsers.has(msg.userId) ? null : msg);
+
+// Log everything
+ws.use('incoming', (msg) => { console.log('← recv', msg); return msg; });
+ws.use('outgoing', (msg) => { console.log('→ send', msg); return msg; });
+
+// Chain multiple — executed in order
+ws.use('outgoing', addTimestamp)
+  .use('outgoing', addRequestId)
+  .use('incoming', decryptPayload)
+  .use('incoming', validateSchema);
+```
+
+## Debug Mode & Custom Logger
+
+```typescript
+// Debug mode — logs all events to console
+new SharedWebSocket(url, { debug: true });
+// [SharedWS] init { tabId: "abc-123", url: "wss://..." }
+// [SharedWS] 👑 became leader
+// [SharedWS] ✓ connected
+// [SharedWS] → send chat.message { text: "hi" }
+// [SharedWS] ← recv chat.message { text: "hello" }
+// [SharedWS] 🔄 reconnecting
+
+// Custom logger (pino, winston, bunyan, etc.)
+import pino from 'pino';
+new SharedWebSocket(url, {
+  debug: true,
+  logger: pino({ name: 'ws' }),
+});
+
+// Sentry integration — errors + breadcrumbs
+import * as Sentry from '@sentry/browser';
+new SharedWebSocket(url, {
+  debug: true,
+  logger: {
+    debug: (msg, ...args) => Sentry.addBreadcrumb({
+      category: 'websocket',
+      message: msg,
+      data: args[0] as Record<string, unknown>,
+      level: 'debug',
+    }),
+    info: (msg, ...args) => Sentry.addBreadcrumb({
+      category: 'websocket',
+      message: msg,
+      level: 'info',
+    }),
+    warn: (msg, ...args) => Sentry.addBreadcrumb({
+      category: 'websocket',
+      message: msg,
+      level: 'warning',
+    }),
+    error: (msg, ...args) => {
+      Sentry.captureException(args[0] instanceof Error ? args[0] : new Error(msg));
+    },
+  },
+});
+
+// Logger interface — implement debug/info/warn/error
+import type { Logger } from '@gwakko/shared-websocket';
+const myLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+```
+
 ## Custom Event Protocol
 
 Override event/field names when your server uses different conventions.

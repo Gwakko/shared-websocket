@@ -1,7 +1,10 @@
 export type SocketState = 'connecting' | 'connected' | 'reconnecting' | 'closed';
 export type TabRole = 'leader' | 'follower';
 export type Unsubscribe = () => void;
-export type EventHandler = (data: any) => void;
+export type EventHandler<T = any> = (data: T) => void;
+
+/** Type-safe event map. Keys are event names, values are payload types. */
+export type EventMap = Record<string, unknown>;
 
 export interface BusMessage {
   id: string;
@@ -12,7 +15,40 @@ export interface BusMessage {
   timestamp: number;
 }
 
-export interface SharedWebSocketOptions {
+/**
+ * Logger interface — inject your own logger (console, pino, winston, Sentry).
+ *
+ * @example
+ * // Default: console
+ * { logger: console }
+ *
+ * @example
+ * // Sentry breadcrumbs
+ * {
+ *   logger: {
+ *     debug: (msg, ...args) => Sentry.addBreadcrumb({ message: msg, data: args, level: 'debug' }),
+ *     info:  (msg, ...args) => Sentry.addBreadcrumb({ message: msg, data: args, level: 'info' }),
+ *     warn:  (msg, ...args) => Sentry.addBreadcrumb({ message: msg, data: args, level: 'warning' }),
+ *     error: (msg, ...args) => Sentry.captureException(args[0] ?? new Error(msg)),
+ *   }
+ * }
+ *
+ * @example
+ * // Pino
+ * import pino from 'pino';
+ * { logger: pino({ name: 'shared-ws' }) }
+ */
+export interface Logger {
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+}
+
+/** Middleware function — transform or inspect messages. Return null to drop. */
+export type Middleware<T = unknown> = (message: T) => T | null;
+
+export interface SharedWebSocketOptions<TEvents extends EventMap = EventMap> {
   protocols?: string[];
   reconnect?: boolean;
   reconnectMaxDelay?: number;
@@ -31,21 +67,12 @@ export interface SharedWebSocketOptions {
   useWorker?: boolean;
   /** Custom worker URL (if useWorker is true and you want to provide your own worker file). */
   workerUrl?: string | URL;
-  /**
-   * Override event/field names sent over WebSocket.
-   * Useful when your server uses different naming conventions.
-   *
-   * @example
-   * // Default
-   * events: {
-   *   eventField: 'event',       // { event: 'chat.message', data: ... }
-   *   dataField: 'data',         // { event: ..., data: { text: 'hi' } }
-   *   channelJoin: 'subscribe',  // sent when ws.channel('room') is called
-   *   channelLeave: 'unsubscribe',
-   *   ping: { type: 'ping' },    // heartbeat payload
-   * }
-   */
+  /** Override event/field names for server protocol compatibility. */
   events?: Partial<EventProtocol>;
+  /** Enable debug logging (default: false). */
+  debug?: boolean;
+  /** Custom logger (default: console). Supports any logger with debug/info/warn/error. */
+  logger?: Logger;
 }
 
 /** Configurable event names and field mappings for server protocol. */

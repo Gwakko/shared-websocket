@@ -5,7 +5,7 @@ import { TabCoordinator } from './TabCoordinator';
 import { SharedSocket } from './SharedSocket';
 import { WorkerSocket } from './WorkerSocket';
 import { SubscriptionManager } from './SubscriptionManager';
-import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol } from './types';
+import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol, EventMap, Logger, Middleware } from './types';
 
 const DEFAULT_PROTOCOL: EventProtocol = {
   eventField: 'event',
@@ -14,6 +14,13 @@ const DEFAULT_PROTOCOL: EventProtocol = {
   channelLeave: '$channel:leave',
   ping: { type: 'ping' },
   defaultEvent: 'message',
+};
+
+const NOOP_LOGGER: Logger = {
+  debug() {},
+  info() {},
+  warn() {},
+  error() {},
 };
 
 /** Common interface for both SharedSocket and WorkerSocket. */
@@ -30,11 +37,18 @@ interface SocketAdapter {
 /**
  * SharedWebSocket — shares ONE WebSocket connection across browser tabs.
  *
- * One tab becomes the "leader" and holds the WebSocket.
- * Other tabs are "followers" receiving data via BroadcastChannel.
- * If the leader closes, a new leader is elected automatically.
+ * @typeParam TEvents - Event map for type-safe subscriptions.
+ *
+ * @example
+ * // Typed events
+ * type Events = {
+ *   'chat.message': { text: string; userId: string };
+ *   'order.created': { id: string; total: number };
+ * };
+ * const ws = new SharedWebSocket<Events>(url);
+ * ws.on('chat.message', (msg) => msg.text); // ← msg: { text, userId }
  */
-export class SharedWebSocket implements Disposable {
+export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Disposable {
   private bus: MessageBus;
   private coordinator: TabCoordinator;
   private socket: SocketAdapter | null = null;
@@ -44,13 +58,18 @@ export class SharedWebSocket implements Disposable {
   private cleanups: Unsubscribe[] = [];
   private disposed = false;
   private readonly proto: EventProtocol;
+  private readonly log: Logger;
+  private outgoingMiddleware: Middleware[] = [];
+  private incomingMiddleware: Middleware[] = [];
 
   constructor(
     private readonly url: string,
-    private readonly options: SharedWebSocketOptions = {},
+    private readonly options: SharedWebSocketOptions<TEvents> = {} as SharedWebSocketOptions<TEvents>,
   ) {
     this.proto = { ...DEFAULT_PROTOCOL, ...options.events };
+    this.log = options.debug ? (options.logger ?? console) : NOOP_LOGGER;
     this.tabId = generateId();
+    this.log.debug('[SharedWS] init', { tabId: this.tabId, url });
     this.bus = new MessageBus('shared-ws', this.tabId);
     this.coordinator = new TabCoordinator(this.bus, this.tabId, {
       electionTimeout: options.electionTimeout,
@@ -163,13 +182,44 @@ export class SharedWebSocket implements Disposable {
     return this.subs.on('$lifecycle:error', fn as EventHandler);
   }
 
+  // ─── Middleware ───────────────────────────────────────
+
+  /**
+   * Add middleware to transform messages before send or after receive.
+   * Return null from middleware to drop the message.
+   *
+   * @example
+   * // Add timestamp to every outgoing message
+   * ws.use('outgoing', (msg) => ({ ...msg, timestamp: Date.now() }));
+   *
+   * @example
+   * // Decrypt incoming messages
+   * ws.use('incoming', (msg) => ({ ...msg, data: decrypt(msg.data) }));
+   *
+   * @example
+   * // Drop messages from blocked users
+   * ws.use('incoming', (msg) => blockedUsers.has(msg.userId) ? null : msg);
+   */
+  use(direction: 'outgoing' | 'incoming', fn: Middleware): this {
+    if (direction === 'outgoing') {
+      this.outgoingMiddleware.push(fn);
+    } else {
+      this.incomingMiddleware.push(fn);
+    }
+    return this;
+  }
+
   // ─── Event Subscription ──────────────────────────────
 
-  /** Subscribe to server events (works in ALL tabs). */
+  /** Subscribe to server events (works in ALL tabs). Type-safe with EventMap. */
+  on<K extends string & keyof TEvents>(event: K, handler: EventHandler<TEvents[K]>): Unsubscribe;
+  on(event: string, handler: EventHandler): Unsubscribe;
   on(event: string, handler: EventHandler): Unsubscribe {
     return this.subs.on(event, handler);
   }
 
+  once<K extends string & keyof TEvents>(event: K, handler: EventHandler<TEvents[K]>): Unsubscribe;
+  once(event: string, handler: EventHandler): Unsubscribe;
   once(event: string, handler: EventHandler): Unsubscribe {
     return this.subs.once(event, handler);
   }
@@ -178,14 +228,29 @@ export class SharedWebSocket implements Disposable {
     this.subs.off(event, handler);
   }
 
-  /** Async generator for consuming events. */
+  /** Async generator for consuming events. Type-safe with EventMap. */
+  stream<K extends string & keyof TEvents>(event: K, signal?: AbortSignal): AsyncGenerator<TEvents[K]>;
+  stream(event: string, signal?: AbortSignal): AsyncGenerator<unknown>;
   stream(event: string, signal?: AbortSignal): AsyncGenerator<unknown> {
     return this.subs.stream(event, signal);
   }
 
-  /** Send message to server (auto-routed through leader). */
+  /** Send message to server (auto-routed through leader). Type-safe with EventMap. */
+  send<K extends string & keyof TEvents>(event: K, data: TEvents[K]): void;
+  send(event: string, data: unknown): void;
   send(event: string, data: unknown): void {
-    const payload = { [this.proto.eventField]: event, [this.proto.dataField]: data };
+    let payload: unknown = { [this.proto.eventField]: event, [this.proto.dataField]: data };
+
+    for (const mw of this.outgoingMiddleware) {
+      payload = mw(payload);
+      if (payload === null) {
+        this.log.debug('[SharedWS] ✗ outgoing dropped by middleware', event);
+        return;
+      }
+    }
+
+    this.log.debug('[SharedWS] → send', event, data);
+
     if (this.coordinator.isLeader && this.socket) {
       this.socket.send(payload);
     } else {
@@ -292,15 +357,27 @@ export class SharedWebSocket implements Disposable {
   }
 
   private handleBecomeLeader(): void {
+    this.log.info('[SharedWS] 👑 became leader');
     this.socket = this.createSocket();
 
-    this.socket.onMessage((data: any) => {
+    this.socket.onMessage((raw: any) => {
+      let data = raw;
+      for (const mw of this.incomingMiddleware) {
+        data = mw(data);
+        if (data === null) {
+          this.log.debug('[SharedWS] ✗ incoming dropped by middleware');
+          return;
+        }
+      }
+
       const event = data?.[this.proto.eventField] ?? this.proto.defaultEvent;
       const payload = data?.[this.proto.dataField] ?? data;
+      this.log.debug('[SharedWS] ← recv', event, payload);
       this.bus.broadcast('ws:message', { event, data: payload });
     });
 
     this.socket.onStateChange((state: string) => {
+      this.log.info('[SharedWS]', state === 'connected' ? '✓ connected' : state === 'reconnecting' ? '🔄 reconnecting' : `state: ${state}`);
       switch (state) {
         case 'connected':
           this.bus.broadcast('ws:lifecycle', { type: 'connect' });
