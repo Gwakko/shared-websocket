@@ -1121,16 +1121,25 @@ Server receives `$topic:subscribe` / `$topic:unsubscribe` events (configurable v
 
 ## Push Notifications
 
-Two modes: **custom render** (sonner, react-hot-toast, your UI) and/or **browser Notification API**. Both respect `leaderOnly` + `onlyWhenHidden` to prevent duplicates across tabs.
+Two modes: **custom render** (sonner, react-hot-toast, your UI) and/or **browser Notification API**.
+
+`target` controls which tab(s) show the notification:
+
+| Target | Behavior | Default for |
+|--------|----------|-------------|
+| `'active'` | Only the currently visible/focused tab | render (toasts) |
+| `'leader'` | Only the leader tab | browser Notification |
+| `'all'` | Every tab (critical alerts) | — |
 
 ### Custom Render — you control the display
 
 ```typescript
-// Vanilla — sonner toast
+// Vanilla — sonner toast (default: target 'active' — visible tab only)
 import { toast } from 'sonner';
 
 ws.push('notification', {
   render: (n) => toast(n.title, { description: n.body }),
+  // target: 'active' — implicit default
 });
 
 ws.push('order.created', {
@@ -1186,15 +1195,14 @@ usePush('order.created', {
 ### Browser Notification API — native OS notifications
 
 ```typescript
-// Vanilla — browser native (no render needed)
+// Vanilla — browser native (default: target 'leader' — one notification, not N)
 ws.push('notification', {
   title: (n) => n.title,
   body: (n) => n.body,
   icon: '/icons/bell.png',
   tag: (n) => `notif-${n.id}`,  // deduplication
   onClick: (n) => window.open(n.url),
-  leaderOnly: true,       // default: true
-  onlyWhenHidden: true,   // default: true
+  // target: 'leader' — implicit default for native notifications
 });
 ```
 
@@ -1218,10 +1226,38 @@ usePush('order.created', {
 </script>
 ```
 
+### Critical alerts — show in ALL tabs
+
+```typescript
+// Vanilla — payment failed: show toast in EVERY tab
+ws.push('payment.failed', {
+  render: (err) => toast.error(`Payment failed: ${err.message}`),
+  target: 'all',  // every tab sees it
+});
+```
+
+```tsx
+// React
+usePush('payment.failed', {
+  render: (err) => toast.error(`Payment failed: ${err.message}`),
+  target: 'all',
+});
+```
+
+```vue
+<!-- Vue -->
+<script setup>
+usePush('payment.failed', {
+  render: (err) => toast.error(`Payment failed: ${err.message}`),
+  target: 'all',
+});
+</script>
+```
+
 ### Both — toast in UI + browser notification
 
 ```typescript
-// Show sonner toast AND browser notification
+// Active tab gets sonner toast, leader sends native notification
 ws.push('order.created', {
   render: (order) => toast.success(`Order #${order.id}`),  // in-app toast
   title: (order) => `New Order #${order.id}`,              // + native notification

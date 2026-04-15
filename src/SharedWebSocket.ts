@@ -359,48 +359,45 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   /**
    * Subscribe to an event and show notifications.
    *
-   * Two modes:
-   * - **render** — you control how to display (sonner, react-hot-toast, custom UI)
-   * - **browser Notification API** — native OS notifications (title/body/icon)
-   *
-   * Both modes respect leaderOnly + onlyWhenHidden to prevent duplicates.
+   * **target** controls which tab(s) display the notification:
+   * - `'active'` — only the currently visible tab (default for render)
+   * - `'leader'` — only the leader tab (default for browser Notification)
+   * - `'all'` — every tab (for critical alerts)
    *
    * @example
-   * // Custom render — sonner toast
-   * import { toast } from 'sonner';
+   * // Custom render — sonner toast on active tab only
    * ws.push('notification', {
-   *   render: (data) => toast(data.title, { description: data.body }),
+   *   render: (n) => toast(n.title),
+   *   target: 'active',  // default for render
    * });
    *
    * @example
-   * // Custom render — react-hot-toast
-   * import toast from 'react-hot-toast';
+   * // Critical alert — show in ALL tabs
+   * ws.push('payment.failed', {
+   *   render: (n) => toast.error('Payment failed!'),
+   *   target: 'all',
+   * });
+   *
+   * @example
+   * // Browser Notification — only from leader
    * ws.push('order.created', {
-   *   render: (order) => toast.success(`New Order #${order.id} — $${order.total}`),
-   * });
-   *
-   * @example
-   * // Browser Notification API (no render — uses title/body/icon)
-   * ws.push('notification', {
-   *   title: (data) => data.title,
-   *   body: (data) => data.body,
-   *   icon: '/icons/bell.png',
-   * });
-   *
-   * @example
-   * // Both — toast in UI + browser notification
-   * ws.push('order.created', {
-   *   render: (order) => toast(`Order #${order.id}`),
    *   title: (order) => `New Order #${order.id}`,
-   *   body: (order) => `$${order.total}`,
+   *   target: 'leader',  // default for browser Notification
+   * });
+   *
+   * @example
+   * // Both render + native with different targets
+   * ws.push('order.created', {
+   *   render: (order) => toast(`Order #${order.id}`),  // active tab
+   *   title: (order) => `New Order #${order.id}`,      // leader → native
    * });
    */
   push<T = unknown>(
     event: string,
     config: {
-      /** Custom render function — you decide how to display. Called for every matching event. */
+      /** Custom render function — you decide how to display. */
       render?: (data: T) => void;
-      /** Title for browser Notification API (ignored if only render is used). */
+      /** Title for browser Notification API. */
       title?: string | ((data: T) => string);
       /** Body for browser Notification API. */
       body?: string | ((data: T) => string);
@@ -408,17 +405,22 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       icon?: string;
       /** Tag for browser Notification deduplication. */
       tag?: string | ((data: T) => string);
-      /** Only trigger from leader tab (default: true). Prevents N duplicates for N tabs. */
-      leaderOnly?: boolean;
-      /** Only trigger when tab is hidden/background (default: true). */
-      onlyWhenHidden?: boolean;
+      /**
+       * Which tab(s) show the notification:
+       * - `'active'` — only the visible/focused tab (default for render)
+       * - `'leader'` — only the leader tab (default for browser Notification)
+       * - `'all'` — every tab (critical alerts)
+       */
+      target?: 'active' | 'leader' | 'all';
       /** Called when browser Notification is clicked. */
       onClick?: (data: T) => void;
     },
   ): Unsubscribe {
-    const leaderOnly = config.leaderOnly ?? true;
-    const onlyWhenHidden = config.onlyWhenHidden ?? true;
     const useNativeNotification = !!config.title;
+
+    // Default target: 'active' for render, 'leader' for native
+    const renderTarget = config.target ?? 'active';
+    const nativeTarget = config.target ?? 'leader';
 
     if (useNativeNotification && typeof Notification !== 'undefined' && Notification.permission === 'default') {
       Notification.requestPermission();
@@ -426,33 +428,47 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     return this.on(event, ((data: unknown) => {
       const typed = data as T;
+      const isVisible = typeof document !== 'undefined' && !document.hidden;
+      const isLeader = this.tabRole === 'leader';
 
-      if (leaderOnly && this.tabRole !== 'leader') return;
-      if (onlyWhenHidden && typeof document !== 'undefined' && !document.hidden) return;
-
-      // Custom render — always called if provided
+      // Custom render
       if (config.render) {
-        config.render(typed);
-        this.log.debug('[SharedWS] 🔔 push render', event);
+        const shouldRender =
+          renderTarget === 'all' ||
+          (renderTarget === 'active' && isVisible) ||
+          (renderTarget === 'leader' && isLeader);
+
+        if (shouldRender) {
+          config.render(typed);
+          this.log.debug('[SharedWS] 🔔 render', event, `(target: ${renderTarget})`);
+        }
       }
 
-      // Browser Notification API — only if title provided and permission granted
+      // Browser Notification API
       if (useNativeNotification && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        const title = typeof config.title === 'function' ? config.title(typed) : config.title!;
-        const body = typeof config.body === 'function' ? config.body(typed) : config.body;
-        const tag = typeof config.tag === 'function' ? config.tag(typed) : config.tag;
+        const shouldNotify =
+          nativeTarget === 'all' ||
+          (nativeTarget === 'leader' && isLeader) ||
+          (nativeTarget === 'active' && isVisible);
 
-        const notif = new Notification(title, { body, icon: config.icon, tag });
+        // Native notifications make sense when tab is hidden
+        if (shouldNotify && !isVisible) {
+          const title = typeof config.title === 'function' ? config.title(typed) : config.title!;
+          const body = typeof config.body === 'function' ? config.body(typed) : config.body;
+          const tag = typeof config.tag === 'function' ? config.tag(typed) : config.tag;
 
-        if (config.onClick) {
-          const handler = config.onClick;
-          notif.onclick = () => {
-            handler(typed);
-            window.focus();
-          };
+          const notif = new Notification(title, { body, icon: config.icon, tag });
+
+          if (config.onClick) {
+            const handler = config.onClick;
+            notif.onclick = () => {
+              handler(typed);
+              window.focus();
+            };
+          }
+
+          this.log.debug('[SharedWS] 🔔 native', title, `(target: ${nativeTarget})`);
         }
-
-        this.log.debug('[SharedWS] 🔔 push native', title);
       }
     }) as EventHandler);
   }
