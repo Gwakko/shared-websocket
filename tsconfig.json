@@ -10,5 +10,6 @@
     "declaration": true,
     "lib": ["ESNext", "DOM"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/worker/*.template.ts"]
 }
