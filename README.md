@@ -383,6 +383,7 @@ new SharedWebSocket('wss://api.example.com/ws?room=general&lang=en', {
 |----------|------|-------------|
 | `connected` | `boolean` | Connection status |
 | `tabRole` | `'leader' \| 'follower'` | Current tab's role |
+| `isActive` | `boolean` | Whether this tab is visible/focused |
 
 ### React Hooks (React 19, `useEffectEvent` for stable refs)
 
@@ -942,11 +943,31 @@ new SharedWebSocket(url, {
 ```typescript
 // Vanilla
 await withSocket(url, async ({ ws }) => {
+  // Connection lifecycle
   ws.onConnect(() => console.log('Connected!'));
   ws.onDisconnect(() => showOfflineBanner());
   ws.onReconnecting(() => showSpinner());
-  ws.onLeaderChange((isLeader) => console.log('Leader:', isLeader));
   ws.onError((err) => reportToSentry(err));
+
+  // Tab role
+  ws.onLeaderChange((isLeader) => console.log('Leader:', isLeader));
+
+  // Tab visibility
+  ws.onActive(() => {
+    console.log('Tab is now active');
+    markNotificationsAsRead();
+  });
+  ws.onInactive(() => {
+    console.log('Tab went to background');
+    pauseAnimations();
+  });
+  ws.onVisibilityChange((isActive) => {
+    console.log('Visibility:', isActive ? 'visible' : 'hidden');
+  });
+
+  // Check current state
+  console.log('Is active:', ws.isActive);
+  console.log('Tab role:', ws.tabRole);
 });
 ```
 
@@ -960,6 +981,15 @@ useSocketLifecycle({
     if (isLeader) console.log('This tab is now the leader');
   },
   onError: (err) => Sentry.captureException(err),
+
+  // Tab visibility
+  onActive: () => {
+    markNotificationsAsRead();
+    refreshData();
+  },
+  onInactive: () => {
+    pausePolling();
+  },
 });
 ```
 
@@ -971,9 +1001,24 @@ useSocketLifecycle({
   onDisconnect: () => toast.error('Connection lost'),
   onReconnecting: () => toast.loading('Reconnecting...'),
   onError: (err) => reportError(err),
+  onActive: () => refreshData(),
+  onInactive: () => pausePolling(),
 });
 </script>
 ```
+
+Available lifecycle hooks:
+
+| Hook | When | Use case |
+|------|------|----------|
+| `onConnect` | WebSocket connected | Hide offline banner, sync state |
+| `onDisconnect` | WebSocket closed | Show offline banner |
+| `onReconnecting` | Reconnecting started | Show spinner |
+| `onError` | Error occurred | Report to Sentry |
+| `onLeaderChange` | Tab became/lost leader | Log, adjust behavior |
+| `onActive` | Tab became visible | Mark read, refresh data, resume |
+| `onInactive` | Tab went to background | Pause polling, animations |
+| `onVisibilityChange` | Any visibility change | Generic handler |
 
 ### Private Channels — chat rooms, tenant notifications
 

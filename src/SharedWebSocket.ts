@@ -136,6 +136,17 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       }),
     );
 
+    // Track tab visibility
+    if (typeof document !== 'undefined') {
+      const onVisibilityChange = () => {
+        const active = !document.hidden;
+        this.subs.emit('$lifecycle:active', active);
+        this.log.debug('[SharedWS]', active ? '👁 tab active' : '👁 tab hidden');
+      };
+      document.addEventListener('visibilitychange', onVisibilityChange);
+      this.cleanups.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+    }
+
     // Cleanup on tab close
     if (typeof window !== 'undefined') {
       const onBeforeUnload = () => this[Symbol.dispose]();
@@ -150,6 +161,11 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
   get tabRole(): TabRole {
     return this.coordinator.isLeader ? 'leader' : 'follower';
+  }
+
+  /** Whether this tab is currently visible/focused. */
+  get isActive(): boolean {
+    return typeof document !== 'undefined' ? !document.hidden : true;
   }
 
   /** Start leader election and connect. */
@@ -182,6 +198,25 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   /** Called on WebSocket or network error (broadcast to all tabs). */
   onError(fn: (error: unknown) => void): Unsubscribe {
     return this.subs.on('$lifecycle:error', fn as EventHandler);
+  }
+
+  /** Called when this tab becomes visible/focused. */
+  onActive(fn: () => void): Unsubscribe {
+    return this.subs.on('$lifecycle:active', ((isActive: unknown) => {
+      if (isActive === true) fn();
+    }) as EventHandler);
+  }
+
+  /** Called when this tab goes to background/hidden. */
+  onInactive(fn: () => void): Unsubscribe {
+    return this.subs.on('$lifecycle:active', ((isActive: unknown) => {
+      if (isActive === false) fn();
+    }) as EventHandler);
+  }
+
+  /** Called on any visibility change. */
+  onVisibilityChange(fn: (isActive: boolean) => void): Unsubscribe {
+    return this.subs.on('$lifecycle:active', fn as EventHandler);
   }
 
   // ─── Middleware ───────────────────────────────────────

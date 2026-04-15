@@ -114,6 +114,12 @@ export interface SocketLifecycleHandlers {
   onReconnecting?: () => void;
   onLeaderChange?: (isLeader: boolean) => void;
   onError?: (error: unknown) => void;
+  /** Called when this tab becomes visible/focused. */
+  onActive?: () => void;
+  /** Called when this tab goes to background/hidden. */
+  onInactive?: () => void;
+  /** Called on any visibility change. */
+  onVisibilityChange?: (isActive: boolean) => void;
 }
 
 /** Scoped channel handle for private/topic-based subscriptions. */

@@ -291,6 +291,9 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
   const onReconnecting = useEffectEvent(() => handlers.onReconnecting?.());
   const onLeaderChange = useEffectEvent((isLeader: boolean) => handlers.onLeaderChange?.(isLeader));
   const onError = useEffectEvent((error: unknown) => handlers.onError?.(error));
+  const onActive = useEffectEvent(() => handlers.onActive?.());
+  const onInactive = useEffectEvent(() => handlers.onInactive?.());
+  const onVisibilityChange = useEffectEvent((isActive: boolean) => handlers.onVisibilityChange?.(isActive));
 
   useEffect(() => {
     const unsubs = [
@@ -299,6 +302,9 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
       socket.onReconnecting(onReconnecting),
       socket.onLeaderChange(onLeaderChange),
       socket.onError(onError),
+      socket.onActive(onActive),
+      socket.onInactive(onInactive),
+      socket.onVisibilityChange(onVisibilityChange),
     ];
     return () => unsubs.forEach((u) => u());
   }, [socket]);

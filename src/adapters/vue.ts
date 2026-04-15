@@ -237,6 +237,9 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
   if (handlers.onReconnecting) unsubs.push(socket.onReconnecting(handlers.onReconnecting));
   if (handlers.onLeaderChange) unsubs.push(socket.onLeaderChange(handlers.onLeaderChange));
   if (handlers.onError) unsubs.push(socket.onError(handlers.onError));
+  if (handlers.onActive) unsubs.push(socket.onActive(handlers.onActive));
+  if (handlers.onInactive) unsubs.push(socket.onInactive(handlers.onInactive));
+  if (handlers.onVisibilityChange) unsubs.push(socket.onVisibilityChange(handlers.onVisibilityChange));
 
   onUnmounted(() => unsubs.forEach((u) => u()));
 }
