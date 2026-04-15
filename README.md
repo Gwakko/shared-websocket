@@ -1018,6 +1018,57 @@ new SharedWebSocket(url, {
 
 The template file is at `src/worker/socket.worker.template.txt` — fully commented with MessagePack, Protobuf, and CBOR examples.
 
+### How Serialization Works with Worker Mode
+
+Worker only handles **global** serialization (wire format). **Per-event** serializers run in main thread — Worker doesn't need to know about them.
+
+```
+Outgoing (useWorker: true):
+
+  Main thread                              Worker
+  ──────────                              ──────
+  ws.send('trading.order', data)
+    │
+    ├─ per-event serializer(data)          
+    │  (protobuf for this event)           
+    │                                      
+    ├─ outgoing middleware(payload)         
+    │                                      
+    ├─ postMessage(payload) ──────────►  receive payload
+    │                                      │
+    │                                      ├─ global serialize (JSON/msgpack)
+    │                                      │  (from worker template)
+    │                                      │
+    │                                      └─ WebSocket.send(bytes)
+
+
+Incoming (useWorker: true):
+
+  Worker                                   Main thread
+  ──────                                   ──────────
+  WebSocket.onmessage(bytes)
+    │
+    ├─ global deserialize (JSON/msgpack)
+    │  (from worker template)
+    │
+    ├─ postMessage(object) ──────────────►  receive object
+    │                                        │
+    │                                        ├─ incoming middleware(object)
+    │                                        │
+    │                                        ├─ extract event name
+    │                                        │
+    │                                        ├─ per-event deserializer(data)
+    │                                        │  (protobuf for this event)
+    │                                        │
+    │                                        └─ emit to handlers
+```
+
+**Summary:**
+- **Worker template** — edit `serialize`/`deserialize` for **wire format** (JSON, MessagePack, Protobuf-everywhere)
+- **`ws.serializer(event, fn)`** — runs in **main thread**, for per-event data transforms
+- They compose: Worker handles bytes ↔ objects, per-event handles specific event data transforms
+- Per-event serializers work identically with or without Worker mode
+
 ## Custom Event Protocol
 
 Override event/field names when your server uses different conventions.
