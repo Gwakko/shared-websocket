@@ -655,8 +655,19 @@ Transform or inspect messages before send / after receive.
 **Processing order:**
 
 ```
-Outgoing: ws.send(data) → outgoing middleware → serialize → WebSocket.send()
-Incoming: WebSocket.onmessage → deserialize → incoming middleware → event handlers
+Outgoing: ws.send(event, data)
+  → per-event serializer(data)     ← if registered for this event
+  → build payload { event, data }
+  → outgoing middleware(payload)   ← transform/inspect/drop
+  → global serialize(payload)      ← JSON.stringify / msgpack / etc
+  → WebSocket.send()
+
+Incoming: WebSocket.onmessage(raw)
+  → global deserialize(raw)        ← JSON.parse / msgpack / etc
+  → incoming middleware(object)    ← transform/inspect/drop
+  → extract event + data
+  → per-event deserializer(data)   ← if registered for this event
+  → emit to handlers
 ```
 
 > Middleware works with **deserialized objects** (not raw bytes). Serialization happens at the transport layer — middleware operates on structured data before serialization (outgoing) or after deserialization (incoming).
@@ -817,13 +828,68 @@ Outgoing:
 
 Incoming:
   WebSocket.onmessage(raw)
-    → deserialize(raw) → object                    ← HERE
+    → global deserialize(raw) → object              ← global
     → incoming middleware (operates on object)
-    → extract event + data from object
+    → extract event name + data
+    → per-event deserializer(data)                   ← per-event
     → emit to handlers
 ```
 
-Middleware always works with **deserialized objects**. Serialization is the last step before wire (outgoing) and first step after wire (incoming).
+**Global** serialize/deserialize handles wire format (JSON, MessagePack, etc).
+**Per-event** serializer/deserializer transforms specific event data (Protobuf for one event, raw binary for another).
+**Middleware** operates on deserialized objects — for cross-cutting concerns (timestamps, filtering, logging).
+
+### Per-Event Serialization
+
+Register custom serializers/deserializers for specific events. Everything else uses global serializer (default: JSON).
+
+```typescript
+// File uploads — binary, everything else — JSON
+ws.serializer('file.upload', (data) => data as ArrayBuffer);
+ws.deserializer('file.download', (data) => new Uint8Array(data as ArrayBuffer));
+
+// Protobuf for high-frequency trading events
+ws.serializer('trading.order', (data) => OrderProto.encode(data).finish());
+ws.deserializer('trading.tick', (data) => TickProto.decode(data as Uint8Array));
+
+// Compress large payloads for specific events
+ws.serializer('analytics.batch', (data) => compress(data));
+ws.deserializer('analytics.batch', (data) => decompress(data));
+
+// Chain with global — global JSON handles the envelope, per-event handles the data field
+// { "event": "trading.order", "data": <protobuf bytes> }
+```
+
+```tsx
+// React — register in a setup component
+function SetupSerializers() {
+  const ws = useSharedWebSocket();
+
+  useEffect(() => {
+    ws.serializer('file.upload', (data) => data as ArrayBuffer);
+    ws.deserializer('file.download', (data) => new Uint8Array(data as ArrayBuffer));
+  }, [ws]);
+
+  return null;
+}
+```
+
+```vue
+<!-- Vue — register in setup -->
+<script setup>
+const ws = useSharedWebSocket();
+ws.serializer('file.upload', (data) => data as ArrayBuffer);
+ws.deserializer('file.download', (data) => new Uint8Array(data as ArrayBuffer));
+</script>
+```
+
+Chainable:
+```typescript
+ws.serializer('file.upload', toBinary)
+  .serializer('trading.order', toProtobuf)
+  .deserializer('trading.tick', fromProtobuf)
+  .deserializer('file.download', toBlobUrl);
+```
 
 ```typescript
 // Default — JSON (no config needed)

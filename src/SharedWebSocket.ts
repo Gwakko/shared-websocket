@@ -63,6 +63,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private readonly log: Logger;
   private outgoingMiddleware: Middleware[] = [];
   private incomingMiddleware: Middleware[] = [];
+  private serializers = new Map<string, (data: unknown) => unknown>();
+  private deserializers = new Map<string, (data: unknown) => unknown>();
 
   constructor(
     private readonly url: string,
@@ -246,6 +248,41 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     return this;
   }
 
+  // ─── Per-Event Serialization ─────────────────────────
+
+  /**
+   * Register a custom serializer for a specific event.
+   * The data is transformed before outgoing middleware and global serialize.
+   *
+   * @example
+   * // Binary for file uploads, JSON for everything else
+   * ws.serializer('file.upload', (data) => new Blob([data as ArrayBuffer]));
+   *
+   * @example
+   * // Protobuf for specific event
+   * ws.serializer('trading.order', (data) => OrderProto.encode(data).finish());
+   */
+  serializer(event: string, fn: (data: unknown) => unknown): this {
+    this.serializers.set(event, fn);
+    return this;
+  }
+
+  /**
+   * Register a custom deserializer for a specific event.
+   * The data is transformed after global deserialize and before incoming middleware.
+   *
+   * @example
+   * ws.deserializer('file.download', (data) => new Uint8Array(data as ArrayBuffer));
+   *
+   * @example
+   * // Protobuf for specific event
+   * ws.deserializer('trading.tick', (data) => TickProto.decode(data as Uint8Array));
+   */
+  deserializer(event: string, fn: (data: unknown) => unknown): this {
+    this.deserializers.set(event, fn);
+    return this;
+  }
+
   // ─── Event Subscription ──────────────────────────────
 
   /** Subscribe to server events (works in ALL tabs). Type-safe with EventMap. */
@@ -278,7 +315,11 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   send<K extends string & keyof TEvents>(event: K, data: TEvents[K]): void;
   send(event: string, data: unknown): void;
   send(event: string, data: unknown): void {
-    let payload: unknown = { [this.proto.eventField]: event, [this.proto.dataField]: data };
+    // Per-event serializer transforms data before building payload
+    const eventSerializer = this.serializers.get(event);
+    const serializedData = eventSerializer ? eventSerializer(data) : data;
+
+    let payload: unknown = { [this.proto.eventField]: event, [this.proto.dataField]: serializedData };
 
     for (const mw of this.outgoingMiddleware) {
       payload = mw(payload);
@@ -557,7 +598,14 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
       const msg = data as Record<string, unknown> | null | undefined;
       const event = (msg?.[this.proto.eventField] as string) ?? this.proto.defaultEvent;
-      const payload = msg?.[this.proto.dataField] ?? data;
+      let payload = msg?.[this.proto.dataField] ?? data;
+
+      // Per-event deserializer transforms data after global deserialize
+      const eventDeserializer = this.deserializers.get(event);
+      if (eventDeserializer) {
+        payload = eventDeserializer(payload);
+      }
+
       this.log.debug('[SharedWS] ← recv', event, payload);
       this.bus.broadcast('ws:message', { event, data: payload });
     });
