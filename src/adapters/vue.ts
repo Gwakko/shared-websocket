@@ -211,3 +211,51 @@ export function useSocketStatus(): {
     tabRole: readonly(tabRole) as Ref<TabRole>,
   };
 }
+
+/**
+ * Lifecycle hooks — react to connection state changes.
+ *
+ * @example
+ * useSocketLifecycle({
+ *   onConnect: () => console.log('Connected!'),
+ *   onDisconnect: () => showOfflineBanner(),
+ *   onReconnecting: () => showSpinner(),
+ *   onLeaderChange: (isLeader) => console.log('Leader:', isLeader),
+ *   onError: (err) => reportError(err),
+ * });
+ */
+export function useSocketLifecycle(handlers: {
+  onConnect?: () => void;
+  onDisconnect?: () => void;
+  onReconnecting?: () => void;
+  onLeaderChange?: (isLeader: boolean) => void;
+  onError?: (error: unknown) => void;
+}): void {
+  const socket = useSharedWebSocket();
+  const unsubs: (() => void)[] = [];
+
+  if (handlers.onConnect) unsubs.push(socket.onConnect(handlers.onConnect));
+  if (handlers.onDisconnect) unsubs.push(socket.onDisconnect(handlers.onDisconnect));
+  if (handlers.onReconnecting) unsubs.push(socket.onReconnecting(handlers.onReconnecting));
+  if (handlers.onLeaderChange) unsubs.push(socket.onLeaderChange(handlers.onLeaderChange));
+  if (handlers.onError) unsubs.push(socket.onError(handlers.onError));
+
+  onUnmounted(() => unsubs.forEach((u) => u()));
+}
+
+/**
+ * Subscribe to a private channel. Auto-joins on mount, leaves on unmount.
+ *
+ * @example
+ * const chat = useChannel('chat:room_123');
+ * // Listen via useSocketEvent('chat:room_123:message')
+ * // Send via chat.send('message', { text: 'Hello' })
+ */
+export function useChannel(name: string) {
+  const socket = useSharedWebSocket();
+  const channel = socket.channel(name);
+
+  onUnmounted(() => channel.leave());
+
+  return channel;
+}

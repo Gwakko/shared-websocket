@@ -32,3 +32,13 @@ export interface SharedWebSocketOptions {
   /** Custom worker URL (if useWorker is true and you want to provide your own worker file). */
   workerUrl?: string | URL;
 }
+
+/** Scoped channel handle for private/topic-based subscriptions. */
+export interface Channel {
+  readonly name: string;
+  on(event: string, handler: EventHandler): Unsubscribe;
+  once(event: string, handler: EventHandler): Unsubscribe;
+  send(event: string, data: unknown): void;
+  stream(event: string, signal?: AbortSignal): AsyncGenerator<unknown>;
+  leave(): void;
+}

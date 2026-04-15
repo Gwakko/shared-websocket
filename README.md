@@ -359,6 +359,8 @@ All hooks use context internally — no need to pass `ws`. Every hook accepts an
 | `useSocketSync<T>(key, init, cb?)` | Returns `[T, setter]` | `cb(value)` — side effects on sync |
 | `useSocketCallback<T>(event, cb)` | — | Fire-and-forget (no state) |
 | `useSocketStatus()` | `{ connected, tabRole }` | — |
+| `useSocketLifecycle(handlers)` | — | onConnect, onDisconnect, onReconnecting, onLeaderChange, onError |
+| `useChannel(name)` | `Channel` handle | Auto-join/leave on mount/unmount |
 
 ```tsx
 // Without callback — reactive state
@@ -437,6 +439,235 @@ const ws = new SharedWebSocket(url);
 const ws = new SharedWebSocket(url, { useWorker: true });
 
 // API is identical — only internal transport changes
+```
+
+## Advanced Examples
+
+### Stream — consume events as async iterator
+
+```typescript
+// Vanilla
+await withSocket(url, async ({ ws, signal }) => {
+  for await (const tick of ws.stream('trading.tick', signal)) {
+    updateChart(tick);  // yields one event at a time
+  }
+  // auto-cleanup: unsubscribes when signal aborts or loop breaks
+});
+```
+
+```tsx
+// React — stream into state with limit
+const [logs, setLogs] = useState<LogEntry[]>([]);
+useSocketStream<LogEntry>('server.log', (entry) => {
+  setLogs(prev => [...prev, entry].slice(-500));
+});
+```
+
+```vue
+<!-- Vue — stream into ref -->
+<script setup>
+const logs = ref<LogEntry[]>([]);
+useSocketStream<LogEntry>('server.log', (entry) => {
+  logs.value = [...logs.value, entry].slice(-500);
+});
+</script>
+```
+
+### Request — request/response through server
+
+```typescript
+// Vanilla — request user profile via server
+await withSocket(url, async ({ ws }) => {
+  const user = await ws.request<User>('user.profile', { id: 123 }, 5000);
+  console.log(user.name);  // response from server, 5s timeout
+});
+```
+
+```tsx
+// React
+function UserProfile({ userId }: { userId: string }) {
+  const ws = useSharedWebSocket();
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    ws.request<User>('user.profile', { id: userId }).then(setUser);
+  }, [userId]);
+
+  return user ? <div>{user.name}</div> : <div>Loading...</div>;
+}
+```
+
+### Protocols — WebSocket subprotocols
+
+```typescript
+// Pass subprotocols for server-side protocol negotiation
+new SharedWebSocket('wss://api.example.com/ws', {
+  protocols: ['graphql-ws', 'graphql-transport-ws'],
+});
+
+// Common protocols:
+// 'graphql-ws' — GraphQL over WebSocket
+// 'mqtt' — MQTT over WebSocket
+// 'wamp.2.json' — WAMP v2
+```
+
+### Worker URL — custom worker file
+
+```typescript
+// Default: inline blob worker (no extra files needed)
+new SharedWebSocket(url, { useWorker: true });
+
+// Custom worker file (for CSP restrictions or custom logic):
+new SharedWebSocket(url, {
+  useWorker: true,
+  workerUrl: '/workers/socket.worker.js',  // your own worker file
+});
+
+// Or as URL object:
+new SharedWebSocket(url, {
+  useWorker: true,
+  workerUrl: new URL('./socket.worker.ts', import.meta.url),  // Vite handles this
+});
+```
+
+### Lifecycle Hooks
+
+```typescript
+// Vanilla
+await withSocket(url, async ({ ws }) => {
+  ws.onConnect(() => console.log('Connected!'));
+  ws.onDisconnect(() => showOfflineBanner());
+  ws.onReconnecting(() => showSpinner());
+  ws.onLeaderChange((isLeader) => console.log('Leader:', isLeader));
+  ws.onError((err) => reportToSentry(err));
+});
+```
+
+```tsx
+// React
+useSocketLifecycle({
+  onConnect: () => toast.success('Connected'),
+  onDisconnect: () => toast.error('Connection lost'),
+  onReconnecting: () => toast.loading('Reconnecting...'),
+  onLeaderChange: (isLeader) => {
+    if (isLeader) console.log('This tab is now the leader');
+  },
+  onError: (err) => Sentry.captureException(err),
+});
+```
+
+```vue
+<!-- Vue -->
+<script setup>
+useSocketLifecycle({
+  onConnect: () => toast.success('Connected'),
+  onDisconnect: () => toast.error('Connection lost'),
+  onReconnecting: () => toast.loading('Reconnecting...'),
+  onError: (err) => reportError(err),
+});
+</script>
+```
+
+### Private Channels — chat rooms, tenant notifications
+
+The `channel()` method creates a scoped handle. Events are prefixed with the channel name. Server receives `$channel:join` / `$channel:leave` events.
+
+```typescript
+// Vanilla — private chat room
+await withSocket(url, { auth: () => getToken() }, async ({ ws }) => {
+  const chat = ws.channel('chat:room_42');
+
+  chat.on('message', (msg) => renderMessage(msg));
+  chat.on('typing', (user) => showTyping(user));
+  chat.send('message', { text: 'Hello room!' });
+
+  // When done:
+  chat.leave();  // sends $channel:leave to server, unsubscribes all
+});
+
+// Tenant-scoped notifications
+await withSocket(url, { auth: () => getToken() }, async ({ ws }) => {
+  const notifs = ws.channel(`tenant:${tenantId}:notifications`);
+  notifs.on('alert', (alert) => showToast(alert));
+  notifs.on('update', (update) => refreshDashboard(update));
+
+  // User's private channel
+  const user = ws.channel(`user:${userId}`);
+  user.on('message', (dm) => showDirectMessage(dm));
+  user.on('mention', (mention) => highlightMention(mention));
+});
+```
+
+```tsx
+// React — auto join/leave on mount/unmount
+function ChatRoom({ roomId }: { roomId: string }) {
+  const chat = useChannel(`chat:${roomId}`);
+
+  // Events are prefixed: 'chat:room_42:message'
+  const message = useSocketEvent<Message>(`chat:${roomId}:message`);
+  const typing = useSocketEvent<User>(`chat:${roomId}:typing`);
+
+  function send(text: string) {
+    chat.send('message', { text });
+  }
+
+  return (/* ... */);
+}
+// When ChatRoom unmounts → chat.leave() called automatically
+
+// Tenant notifications
+function TenantAlerts({ tenantId }: { tenantId: string }) {
+  const channel = useChannel(`tenant:${tenantId}:notifications`);
+
+  useSocketCallback(`tenant:${tenantId}:notifications:alert`, (alert) => {
+    showToast(alert);
+  });
+
+  return null;
+}
+```
+
+```vue
+<!-- Vue — private channel -->
+<script setup>
+const props = defineProps<{ roomId: string }>();
+
+const chat = useChannel(`chat:${props.roomId}`);
+const message = useSocketEvent<Message>(`chat:${props.roomId}:message`);
+
+function send(text: string) {
+  chat.send('message', { text });
+}
+// Auto-leave on unmount
+</script>
+```
+
+### Server-side channel handling
+
+```typescript
+// Node.js — handle channel join/leave
+wss.on('connection', (ws) => {
+  const channels = new Set<string>();
+
+  ws.on('message', (raw) => {
+    const msg = JSON.parse(raw.toString());
+
+    if (msg.event === '$channel:join') {
+      channels.add(msg.data.channel);
+      console.log(`Client joined ${msg.data.channel}`);
+      return;
+    }
+
+    if (msg.event === '$channel:leave') {
+      channels.delete(msg.data.channel);
+      return;
+    }
+
+    // Route channel messages
+    // msg.event = 'chat:room_42:message'
+    // Extract channel: 'chat:room_42'
+  });
+});
 ```
 
 ## Browser Support

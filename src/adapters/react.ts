@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   useEffectEvent,
   type ReactNode,
@@ -268,4 +269,68 @@ export function useSocketStatus(): {
   }, [socket]);
 
   return { connected, tabRole };
+}
+
+/**
+ * Lifecycle hooks — react to connection state changes.
+ *
+ * @example
+ * useSocketLifecycle({
+ *   onConnect: () => console.log('Connected!'),
+ *   onDisconnect: () => console.log('Disconnected'),
+ *   onReconnecting: () => showSpinner(),
+ *   onLeaderChange: (isLeader) => console.log('Leader:', isLeader),
+ *   onError: (err) => reportError(err),
+ * });
+ */
+export function useSocketLifecycle(handlers: {
+  onConnect?: () => void;
+  onDisconnect?: () => void;
+  onReconnecting?: () => void;
+  onLeaderChange?: (isLeader: boolean) => void;
+  onError?: (error: unknown) => void;
+}): void {
+  const socket = useSharedWebSocket();
+
+  const onConnect = useEffectEvent(() => handlers.onConnect?.());
+  const onDisconnect = useEffectEvent(() => handlers.onDisconnect?.());
+  const onReconnecting = useEffectEvent(() => handlers.onReconnecting?.());
+  const onLeaderChange = useEffectEvent((isLeader: boolean) => handlers.onLeaderChange?.(isLeader));
+  const onError = useEffectEvent((error: unknown) => handlers.onError?.(error));
+
+  useEffect(() => {
+    const unsubs = [
+      socket.onConnect(onConnect),
+      socket.onDisconnect(onDisconnect),
+      socket.onReconnecting(onReconnecting),
+      socket.onLeaderChange(onLeaderChange),
+      socket.onError(onError),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, [socket]);
+}
+
+/**
+ * Subscribe to a private channel. Auto-joins on mount, leaves on unmount.
+ *
+ * @example
+ * const chat = useChannel('chat:room_123');
+ * const message = useSocketEvent('chat:room_123:message');
+ * chat.send('message', { text: 'Hello' });
+ *
+ * @example
+ * // Tenant notifications
+ * const notifications = useChannel(`tenant:${tenantId}:notifications`);
+ * useSocketCallback(`tenant:${tenantId}:notifications:alert`, showToast);
+ */
+export function useChannel(name: string) {
+  const socket = useSharedWebSocket();
+  const channelRef = useRef(socket.channel(name));
+
+  useEffect(() => {
+    channelRef.current = socket.channel(name);
+    return () => channelRef.current.leave();
+  }, [socket, name]);
+
+  return channelRef.current;
 }

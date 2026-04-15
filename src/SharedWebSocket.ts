@@ -5,7 +5,7 @@ import { TabCoordinator } from './TabCoordinator';
 import { SharedSocket } from './SharedSocket';
 import { WorkerSocket } from './WorkerSocket';
 import { SubscriptionManager } from './SubscriptionManager';
-import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler } from './types';
+import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel } from './types';
 
 /** Common interface for both SharedSocket and WorkerSocket. */
 interface SocketAdapter {
@@ -72,8 +72,37 @@ export class SharedWebSocket implements Disposable {
     );
 
     // Leader lifecycle
-    this.coordinator.onBecomeLeader(() => this.onBecomeLeader());
-    this.coordinator.onLoseLeadership(() => this.onLoseLeadership());
+    this.coordinator.onBecomeLeader(() => {
+      this.handleBecomeLeader();
+      this.bus.broadcast('ws:lifecycle', { type: 'leader', isLeader: true });
+    });
+    this.coordinator.onLoseLeadership(() => {
+      this.handleLoseLeadership();
+      this.bus.broadcast('ws:lifecycle', { type: 'leader', isLeader: false });
+    });
+
+    // Lifecycle events from bus (all tabs receive)
+    this.cleanups.push(
+      this.bus.subscribe<{ type: string; isLeader?: boolean; error?: unknown }>('ws:lifecycle', (msg) => {
+        switch (msg.type) {
+          case 'connect':
+            this.subs.emit('$lifecycle:connect', undefined);
+            break;
+          case 'disconnect':
+            this.subs.emit('$lifecycle:disconnect', undefined);
+            break;
+          case 'reconnecting':
+            this.subs.emit('$lifecycle:reconnecting', undefined);
+            break;
+          case 'leader':
+            this.subs.emit('$lifecycle:leader', msg.isLeader);
+            break;
+          case 'error':
+            this.subs.emit('$lifecycle:error', msg.error);
+            break;
+        }
+      }),
+    );
 
     // Cleanup on tab close
     if (typeof window !== 'undefined') {
@@ -95,6 +124,35 @@ export class SharedWebSocket implements Disposable {
   async connect(): Promise<void> {
     await this.coordinator.elect();
   }
+
+  // ─── Lifecycle Hooks ─────────────────────────────────
+
+  /** Called when WebSocket connection opens (broadcast to all tabs). */
+  onConnect(fn: () => void): Unsubscribe {
+    return this.subs.on('$lifecycle:connect', fn);
+  }
+
+  /** Called when WebSocket connection closes (broadcast to all tabs). */
+  onDisconnect(fn: () => void): Unsubscribe {
+    return this.subs.on('$lifecycle:disconnect', fn);
+  }
+
+  /** Called when WebSocket starts reconnecting (broadcast to all tabs). */
+  onReconnecting(fn: () => void): Unsubscribe {
+    return this.subs.on('$lifecycle:reconnecting', fn);
+  }
+
+  /** Called when this tab becomes leader or loses leadership. */
+  onLeaderChange(fn: (isLeader: boolean) => void): Unsubscribe {
+    return this.subs.on('$lifecycle:leader', fn as EventHandler);
+  }
+
+  /** Called on WebSocket or network error (broadcast to all tabs). */
+  onError(fn: (error: unknown) => void): Unsubscribe {
+    return this.subs.on('$lifecycle:error', fn as EventHandler);
+  }
+
+  // ─── Event Subscription ──────────────────────────────
 
   /** Subscribe to server events (works in ALL tabs). */
   on(event: string, handler: EventHandler): Unsubscribe {
@@ -142,6 +200,54 @@ export class SharedWebSocket implements Disposable {
     return this.subs.on(`sync:${key}`, fn as EventHandler);
   }
 
+  /**
+   * Subscribe to a private/scoped channel. Returns a channel handle with
+   * scoped on/send/stream methods. Sends join on subscribe, leave on unsubscribe.
+   *
+   * @example
+   * const chat = ws.channel('chat:room_123');
+   * chat.on('message', (msg) => render(msg));
+   * chat.send('message', { text: 'Hello' });
+   * chat.leave(); // sends leave + unsubscribes
+   *
+   * @example
+   * // Private notifications for tenant
+   * const notifications = ws.channel(`tenant:${tenantId}:notifications`);
+   * notifications.on('alert', (alert) => showToast(alert));
+   */
+  channel(name: string): Channel {
+    // Notify server about channel subscription
+    this.send('$channel:join', { channel: name });
+
+    const self = this;
+    const unsubs: Unsubscribe[] = [];
+
+    return {
+      name,
+      on(event: string, handler: EventHandler): Unsubscribe {
+        const unsub = self.subs.on(`${name}:${event}`, handler);
+        unsubs.push(unsub);
+        return unsub;
+      },
+      once(event: string, handler: EventHandler): Unsubscribe {
+        const unsub = self.subs.once(`${name}:${event}`, handler);
+        unsubs.push(unsub);
+        return unsub;
+      },
+      send(event: string, data: unknown): void {
+        self.send(`${name}:${event}`, data);
+      },
+      stream(event: string, signal?: AbortSignal): AsyncGenerator<unknown> {
+        return self.subs.stream(`${name}:${event}`, signal);
+      },
+      leave(): void {
+        self.send('$channel:leave', { channel: name });
+        for (const unsub of unsubs) unsub();
+        unsubs.length = 0;
+      },
+    };
+  }
+
   disconnect(): void {
     this[Symbol.dispose]();
   }
@@ -172,17 +278,29 @@ export class SharedWebSocket implements Disposable {
     });
   }
 
-  private onBecomeLeader(): void {
+  private handleBecomeLeader(): void {
     this.socket = this.createSocket();
 
     this.socket.onMessage((data: any) => {
       const event = data?.event ?? 'message';
       const payload = data?.data ?? data;
-      // Broadcast to ALL tabs (including self)
       this.bus.broadcast('ws:message', { event, data: payload });
     });
 
-    // Handle send requests from followers (request/response pattern)
+    this.socket.onStateChange((state: string) => {
+      switch (state) {
+        case 'connected':
+          this.bus.broadcast('ws:lifecycle', { type: 'connect' });
+          break;
+        case 'closed':
+          this.bus.broadcast('ws:lifecycle', { type: 'disconnect' });
+          break;
+        case 'reconnecting':
+          this.bus.broadcast('ws:lifecycle', { type: 'reconnecting' });
+          break;
+      }
+    });
+
     this.cleanups.push(
       this.bus.respond<{ event: string; data: unknown }, unknown>('ws:request', async (req) => {
         return new Promise((resolve) => {
@@ -200,7 +318,7 @@ export class SharedWebSocket implements Disposable {
     this.socket.connect();
   }
 
-  private onLoseLeadership(): void {
+  private handleLoseLeadership(): void {
     if (this.socket) {
       this.socket[Symbol.dispose]();
       this.socket = null;
