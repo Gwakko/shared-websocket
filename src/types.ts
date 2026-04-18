@@ -109,6 +109,12 @@ export interface EventProtocol {
   topicSubscribe: string;
   /** Event name for topic unsubscribe (default: "$topic:unsubscribe"). */
   topicUnsubscribe: string;
+  /** Event name sent when authenticating at runtime (default: "$auth:login"). */
+  authLogin: string;
+  /** Event name sent when deauthenticating (default: "$auth:logout"). */
+  authLogout: string;
+  /** Event name server sends to revoke auth (default: "$auth:revoked"). */
+  authRevoked: string;
 }
 
 /** Push notification options. */
@@ -136,6 +142,8 @@ export interface SocketLifecycleHandlers {
   onInactive?: () => void;
   /** Called on any visibility change. */
   onVisibilityChange?: (isActive: boolean) => void;
+  /** Called when auth state changes (authenticate/deauthenticate/server revocation). */
+  onAuthChange?: (authenticated: boolean) => void;
 }
 
 /** Scoped channel handle for private/topic-based subscriptions. */

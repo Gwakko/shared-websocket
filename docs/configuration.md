@@ -334,6 +334,11 @@ All fields in `events` are optional — override only what differs from defaults
 | `channelLeave` | `"$channel:leave"` | Event sent when leaving a channel |
 | `ping` | `{ type: "ping" }` | Heartbeat payload |
 | `defaultEvent` | `"message"` | Fallback event when message has no event field |
+| `topicSubscribe` | `"$topic:subscribe"` | Event sent when subscribing to a topic |
+| `topicUnsubscribe` | `"$topic:unsubscribe"` | Event sent when unsubscribing from a topic |
+| `authLogin` | `"$auth:login"` | Event sent on `authenticate(token)` |
+| `authLogout` | `"$auth:logout"` | Event sent on `deauthenticate()` |
+| `authRevoked` | `"$auth:revoked"` | Event server sends to revoke auth |
 
 ## Middleware
 

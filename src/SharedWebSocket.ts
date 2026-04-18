@@ -16,6 +16,9 @@ const DEFAULT_PROTOCOL: EventProtocol = {
   defaultEvent: 'message',
   topicSubscribe: '$topic:subscribe',
   topicUnsubscribe: '$topic:unsubscribe',
+  authLogin: '$auth:login',
+  authLogout: '$auth:logout',
+  authRevoked: '$auth:revoked',
 };
 
 const NOOP_LOGGER: Logger = {
@@ -65,6 +68,9 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private incomingMiddleware: Middleware[] = [];
   private serializers = new Map<string, (data: unknown) => unknown>();
   private deserializers = new Map<string, (data: unknown) => unknown>();
+  private _isAuthenticated = false;
+  private authChannels = new Map<string, Channel>();
+  private authTopics = new Set<string>();
 
   constructor(
     private readonly url: string,
@@ -117,7 +123,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     // Lifecycle events from bus (all tabs receive)
     this.cleanups.push(
-      this.bus.subscribe<{ type: string; isLeader?: boolean; error?: unknown }>('ws:lifecycle', (msg) => {
+      this.bus.subscribe<{ type: string; isLeader?: boolean; error?: unknown; authenticated?: boolean }>('ws:lifecycle', (msg) => {
         switch (msg.type) {
           case 'connect':
             this.subs.emit('$lifecycle:connect', undefined);
@@ -134,6 +140,15 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
           case 'error':
             this.subs.emit('$lifecycle:error', msg.error);
             break;
+          case 'auth': {
+            this._isAuthenticated = !!msg.authenticated;
+            if (!msg.authenticated) {
+              this.authChannels.clear();
+              this.authTopics.clear();
+            }
+            this.subs.emit('$lifecycle:auth', msg.authenticated);
+            break;
+          }
         }
       }),
     );
@@ -149,6 +164,22 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       this.cleanups.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));
     }
 
+    // Handle server-initiated auth revocation
+    this.cleanups.push(
+      this.subs.on(this.proto.authRevoked, () => {
+        if (this.coordinator.isLeader) {
+          for (const [, ch] of this.authChannels) ch.leave();
+          for (const topic of this.authTopics) this.unsubscribe(topic);
+        }
+        this.authChannels.clear();
+        this.authTopics.clear();
+        this._isAuthenticated = false;
+        this.syncStore.delete('$auth:token');
+        this.subs.emit('$lifecycle:auth', false);
+        this.log.warn('[SharedWS] auth revoked by server');
+      }),
+    );
+
     // Cleanup on tab close
     if (typeof window !== 'undefined') {
       const onBeforeUnload = () => this[Symbol.dispose]();
@@ -163,6 +194,11 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
   get tabRole(): TabRole {
     return this.coordinator.isLeader ? 'leader' : 'follower';
+  }
+
+  /** Whether the user is authenticated via runtime auth. */
+  get isAuthenticated(): boolean {
+    return this._isAuthenticated;
   }
 
   /** Whether this tab is currently visible/focused. */
@@ -219,6 +255,64 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   /** Called on any visibility change. */
   onVisibilityChange(fn: (isActive: boolean) => void): Unsubscribe {
     return this.subs.on('$lifecycle:active', fn as EventHandler);
+  }
+
+  // ─── Authentication ──────────────────────────────────
+
+  /**
+   * Authenticate on an existing connection. Sends auth event to server,
+   * syncs auth state across all tabs. Use for login after guest connection.
+   *
+   * @example
+   * const token = await loginApi(email, password);
+   * ws.authenticate(token);
+   *
+   * @example
+   * // React — via useAuth hook
+   * const { authenticate } = useAuth();
+   * authenticate(token);
+   */
+  authenticate(token: string): void {
+    this._isAuthenticated = true;
+    this.syncStore.set('$auth:token', token);
+    this.bus.broadcast('ws:sync', { key: '$auth:token', value: token });
+    this.send(this.proto.authLogin, { token });
+    this.bus.broadcast('ws:lifecycle', { type: 'auth', authenticated: true });
+    this.log.info('[SharedWS] authenticated');
+  }
+
+  /**
+   * Deauthenticate — notifies server, auto-leaves all auth-required channels
+   * and topics, syncs state across tabs. Connection stays open for public events.
+   *
+   * @example
+   * ws.deauthenticate(); // connection stays open, auth subscriptions cleaned up
+   */
+  deauthenticate(): void {
+    // Leave auth channels and unsubscribe auth topics
+    for (const [, ch] of this.authChannels) ch.leave();
+    this.authChannels.clear();
+    for (const topic of this.authTopics) this.unsubscribe(topic);
+    this.authTopics.clear();
+
+    this._isAuthenticated = false;
+    this.send(this.proto.authLogout, {});
+    this.syncStore.delete('$auth:token');
+    this.bus.broadcast('ws:sync', { key: '$auth:token', value: undefined });
+    this.bus.broadcast('ws:lifecycle', { type: 'auth', authenticated: false });
+    this.log.info('[SharedWS] deauthenticated');
+  }
+
+  /**
+   * Called when auth state changes (authenticate, deauthenticate, or server revocation).
+   *
+   * @example
+   * ws.onAuthChange((authenticated) => {
+   *   if (!authenticated) router.push('/login');
+   * });
+   */
+  onAuthChange(fn: (authenticated: boolean) => void): Unsubscribe {
+    return this.subs.on('$lifecycle:auth', fn as EventHandler);
   }
 
   // ─── Middleware ───────────────────────────────────────
@@ -372,14 +466,15 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * const notifications = ws.channel(`tenant:${tenantId}:notifications`);
    * notifications.on('alert', (alert) => showToast(alert));
    */
-  channel(name: string): Channel {
+  channel(name: string, options?: { auth?: boolean }): Channel {
     // Notify server about channel subscription
     this.send(this.proto.channelJoin, { channel: name });
 
     const self = this;
     const unsubs: Unsubscribe[] = [];
+    const isAuth = options?.auth ?? false;
 
-    return {
+    const ch: Channel = {
       name,
       on(event: string, handler: EventHandler): Unsubscribe {
         const unsub = self.subs.on(`${name}:${event}`, handler);
@@ -401,8 +496,15 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         self.send(self.proto.channelLeave, { channel: name });
         for (const unsub of unsubs) unsub();
         unsubs.length = 0;
+        if (isAuth) self.authChannels.delete(name);
       },
     };
+
+    if (isAuth) {
+      this.authChannels.set(name, ch);
+    }
+
+    return ch;
   }
 
   // ─── Topics ──────────────────────────────────────────
@@ -416,9 +518,12 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * ws.subscribe('notifications:payments');
    * ws.subscribe(`user:${userId}:mentions`);
    */
-  subscribe(topic: string): void {
+  subscribe(topic: string, options?: { auth?: boolean }): void {
     this.send(this.proto.topicSubscribe, { topic });
-    this.log.debug('[SharedWS] 📌 subscribe topic', topic);
+    if (options?.auth) {
+      this.authTopics.add(topic);
+    }
+    this.log.debug('[SharedWS] subscribe topic', topic);
   }
 
   /**
@@ -427,7 +532,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    */
   unsubscribe(topic: string): void {
     this.send(this.proto.topicUnsubscribe, { topic });
-    this.log.debug('[SharedWS] 📌 unsubscribe topic', topic);
+    this.authTopics.delete(topic);
+    this.log.debug('[SharedWS] unsubscribe topic', topic);
   }
 
   // ─── Push Notifications ─────────────────────────────
@@ -615,6 +721,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       switch (state) {
         case 'connected':
           this.bus.broadcast('ws:lifecycle', { type: 'connect' });
+          this.reAuthenticateOnReconnect();
           break;
         case 'closed':
           this.bus.broadcast('ws:lifecycle', { type: 'disconnect' });
@@ -643,6 +750,35 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.socket.connect();
   }
 
+  private reAuthenticateOnReconnect(): void {
+    if (!this._isAuthenticated || !this.socket) return;
+
+    const token = this.syncStore.get('$auth:token') as string | undefined;
+    if (token) {
+      this.socket.send({
+        [this.proto.eventField]: this.proto.authLogin,
+        [this.proto.dataField]: { token },
+      });
+      this.log.debug('[SharedWS] re-authenticated after reconnect');
+    }
+
+    // Re-join auth channels
+    for (const name of this.authChannels.keys()) {
+      this.socket.send({
+        [this.proto.eventField]: this.proto.channelJoin,
+        [this.proto.dataField]: { channel: name },
+      });
+    }
+
+    // Re-subscribe auth topics
+    for (const topic of this.authTopics) {
+      this.socket.send({
+        [this.proto.eventField]: this.proto.topicSubscribe,
+        [this.proto.dataField]: { topic },
+      });
+    }
+  }
+
   private handleLoseLeadership(): void {
     if (this.socket) {
       this.socket[Symbol.dispose]();
@@ -666,5 +802,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.subs[Symbol.dispose]();
     this.bus[Symbol.dispose]();
     this.syncStore.clear();
+    this.authChannels.clear();
+    this.authTopics.clear();
   }
 }

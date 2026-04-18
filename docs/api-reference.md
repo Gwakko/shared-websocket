@@ -67,8 +67,11 @@ Callback receives `{ ws, signal }` — destructure what you need. Signal aborts 
 | `connected` | `boolean` | Connection status |
 | `tabRole` | `'leader' \| 'follower'` | Current tab's role |
 | `isActive` | `boolean` | Whether this tab is visible/focused |
+| `isAuthenticated` | `boolean` | Whether user is authenticated via runtime auth |
 
 ## Authentication
+
+### Connect-time auth (URL parameter)
 
 Three ways to pass a token. Token is appended as a query parameter (default `?token=xxx`):
 
@@ -101,6 +104,20 @@ new SharedWebSocket('wss://api.example.com/ws?room=general&lang=en', {
 // → wss://api.example.com/ws?room=general&lang=en&token=eyJhb...
 ```
 
+### Runtime auth (on existing connection)
+
+Authenticate/deauthenticate without reconnecting. Auth state syncs across all tabs.
+
+| Method | Description |
+|--------|-------------|
+| `authenticate(token)` | Send `$auth:login` to server, set `isAuthenticated = true` |
+| `deauthenticate()` | Auto-leave auth channels/topics, send `$auth:logout` |
+| `onAuthChange(fn)` | Called on authenticate, deauthenticate, or server revocation |
+| `channel(name, { auth: true })` | Channel that auto-leaves on deauth |
+| `subscribe(topic, { auth: true })` | Topic that auto-unsubscribes on deauth |
+
+See [Runtime Authentication](./features.md#runtime-authentication) for full examples.
+
 ## React Hooks (React 19, `useEffectEvent` for stable refs)
 
 All hooks use context internally — no need to pass `ws`. Every hook accepts an **optional callback** for custom handling.
@@ -112,9 +129,10 @@ All hooks use context internally — no need to pass `ws`. Every hook accepts an
 | `useSocketStream<T>(event, cb?)` | Returns `T[]` (accumulated) | `cb(data)` — manage your own state |
 | `useSocketSync<T>(key, init, cb?)` | Returns `[T, setter]` | `cb(value)` — side effects on sync |
 | `useSocketCallback<T>(event, cb)` | — | Fire-and-forget (no state) |
-| `useSocketStatus()` | `{ connected, tabRole }` | — |
-| `useSocketLifecycle(handlers)` | — | onConnect, onDisconnect, onReconnecting, onLeaderChange, onError |
-| `useChannel(name)` | `Channel` handle | Auto-join/leave on mount/unmount |
+| `useAuth()` | `{ isAuthenticated, authenticate, deauthenticate }` | — |
+| `useSocketStatus()` | `{ connected, tabRole, isAuthenticated }` | — |
+| `useSocketLifecycle(handlers)` | — | onConnect, onDisconnect, onReconnecting, onLeaderChange, onError, onAuthChange |
+| `useChannel(name, opts?)` | `Channel` handle | Auto-join/leave, `{ auth: true }` for auth-aware |
 
 ```tsx
 // Without callback — reactive state
@@ -154,4 +172,5 @@ All composables accept an **optional callback** — same pattern as React hooks.
 | `useSocketStream<T>(event, cb?)` | `Ref<T[]>` | `cb(data)` — manage your own ref |
 | `useSocketSync<T>(key, init, cb?)` | `Ref<T>` (two-way) | `cb(value)` — side effects on sync |
 | `useSocketCallback<T>(event, cb)` | — | Fire-and-forget |
-| `useSocketStatus()` | `{ connected, tabRole }` | — |
+| `useAuth()` | `{ isAuthenticated, authenticate, deauthenticate }` | — |
+| `useSocketStatus()` | `{ connected, tabRole, isAuthenticated }` | — |

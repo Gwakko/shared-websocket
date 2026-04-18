@@ -15,6 +15,7 @@ Quick setup and first steps with Shared WebSocket.
   - [Scoped Lifecycle — withSocket()](#scoped-lifecycle--withsocket)
 - [Usage — React](#usage--react)
 - [Usage — Vue 3](#usage--vue-3)
+- [Runtime Authentication](#runtime-authentication)
 
 ## Installation
 
@@ -254,5 +255,281 @@ function addToCart() {
   <p v-if="order">Latest order: #{{ order.id }}</p>
   <button @click="ws.send('ping', {})">Ping</button>
   <button @click="addToCart">Add to cart ({{ cart.items.length }})</button>
+</template>
+```
+
+## Runtime Authentication
+
+WebSocket connects as a global instance (works for guests). Authenticate and deauthenticate at runtime on the existing connection — no reconnect needed.
+
+### Vanilla TypeScript
+
+```typescript
+import { SharedWebSocket } from '@gwakko/shared-websocket';
+
+const ws = new SharedWebSocket('wss://api.example.com/ws');
+await ws.connect();
+
+// ── Guest phase — public events work immediately ──────────
+
+ws.on('announcement', (msg) => showBanner(msg));
+ws.on('system.status', (status) => updateStatusBar(status));
+
+// ── Login — authenticate on existing connection ───────────
+
+async function login(email: string, password: string) {
+  const res = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  const { token } = await res.json();
+
+  ws.authenticate(token);
+  // Sends: { event: "$auth:login", data: { token } }
+  // State synced to all tabs via BroadcastChannel
+}
+
+// ── Authenticated phase — private resources ───────────────
+
+// Auth-aware channel — auto-leaves when deauthenticated
+const inbox = ws.channel(`user:${userId}:inbox`, { auth: true });
+inbox.on('message', (msg) => renderMessage(msg));
+inbox.send('read', { messageId: '123' });
+
+// Auth-aware topics — auto-unsubscribe on deauth
+ws.subscribe('notifications:orders', { auth: true });
+ws.subscribe(`user:${userId}:mentions`, { auth: true });
+
+// Public channel — NOT affected by deauth
+const lobby = ws.channel('chat:lobby');
+lobby.on('message', (msg) => renderLobbyMessage(msg));
+
+// ── Logout — connection stays open ────────────────────────
+
+function logout() {
+  ws.deauthenticate();
+  // 1. Auto-leaves: user:${userId}:inbox (auth channel)
+  // 2. Auto-unsubscribes: notifications:orders, user:${userId}:mentions
+  // 3. Sends: { event: "$auth:logout", data: {} }
+  // 4. Public events + lobby channel keep working
+}
+
+// ── React to auth changes (including server revocation) ───
+
+ws.onAuthChange((authenticated) => {
+  if (authenticated) {
+    showUI('dashboard');
+  } else {
+    showUI('login');
+    showToast('You have been logged out');
+  }
+});
+
+// Listen for revocation reason
+ws.on('$auth:revoked', (data) => {
+  const { reason } = data as { reason: string };
+  if (reason === 'token_expired') {
+    showToast('Session expired — please log in again');
+  } else if (reason === 'account_suspended') {
+    showToast('Your account has been suspended');
+  }
+});
+
+// Check auth state anywhere
+console.log(ws.isAuthenticated); // true / false
+```
+
+### React
+
+```tsx
+import {
+  SharedWebSocketProvider,
+  useAuth,
+  useSocketEvent,
+  useSocketLifecycle,
+  useChannel,
+  useTopics,
+} from '@gwakko/shared-websocket/react';
+
+// ── App root — WebSocket connects once ────────────────────
+
+function App() {
+  return (
+    <SharedWebSocketProvider
+      url="wss://api.example.com/ws"
+      options={{ debug: true }}
+    >
+      <Layout />
+    </SharedWebSocketProvider>
+  );
+}
+
+// ── Layout — auth-aware routing ───────────────────────────
+
+function Layout() {
+  const { isAuthenticated } = useAuth();
+
+  // Redirect on deauth / server revocation
+  useSocketLifecycle({
+    onAuthChange: (auth) => {
+      if (!auth) navigate('/login');
+    },
+  });
+
+  return (
+    <>
+      <Header />
+      {/* Public — always rendered */}
+      <Announcements />
+      {/* Private — unmounts on deauth, auto-cleans channels/topics */}
+      {isAuthenticated && <Dashboard />}
+      {isAuthenticated && <PrivateInbox />}
+    </>
+  );
+}
+
+// ── Header — login/logout UI ──────────────────────────────
+
+function Header() {
+  const { isAuthenticated, authenticate, deauthenticate } = useAuth();
+
+  const handleLogin = async () => {
+    const { token } = await api.login('user@test.com', 'password');
+    authenticate(token); // → all tabs become authenticated
+  };
+
+  return (
+    <nav>
+      <h1>MyApp</h1>
+      {isAuthenticated ? (
+        <button onClick={deauthenticate}>Logout</button>
+      ) : (
+        <button onClick={handleLogin}>Login</button>
+      )}
+    </nav>
+  );
+}
+
+// ── Public component — works for guests ───────────────────
+
+function Announcements() {
+  const announcement = useSocketEvent<{ text: string }>('announcement');
+  return announcement ? <div className="banner">{announcement.text}</div> : null;
+}
+
+// ── Private component — auth-aware channel + topics ───────
+
+function PrivateInbox() {
+  // Channel with { auth: true } → auto-leaves on deauth or unmount
+  const inbox = useChannel('user:inbox', { auth: true });
+
+  // Topics with { auth: true } → auto-unsubscribe on deauth or unmount
+  useTopics(['notifications:orders', 'notifications:payments'], { auth: true });
+
+  const message = useSocketEvent<{ text: string }>('user:inbox:message');
+  const notification = useSocketEvent<{ title: string }>('notifications:orders:new');
+
+  return (
+    <div>
+      {message && <p>Inbox: {message.text}</p>}
+      {notification && <p>Order: {notification.title}</p>}
+    </div>
+  );
+}
+```
+
+### Vue 3
+
+```typescript
+// main.ts — WebSocket connects once at app startup
+import { createApp } from 'vue';
+import { createSharedWebSocketPlugin } from '@gwakko/shared-websocket/vue';
+import App from './App.vue';
+
+const app = createApp(App);
+app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
+  debug: true,
+}));
+app.mount('#app');
+```
+
+```vue
+<!-- Layout.vue — auth-aware routing -->
+<script setup lang="ts">
+import {
+  useAuth,
+  useSocketLifecycle,
+} from '@gwakko/shared-websocket/vue';
+import { useRouter } from 'vue-router';
+
+const router = useRouter();
+const { isAuthenticated, authenticate, deauthenticate } = useAuth();
+
+async function login() {
+  const { token } = await api.login('user@test.com', 'password');
+  authenticate(token); // → all tabs become authenticated
+}
+
+useSocketLifecycle({
+  onAuthChange: (auth) => {
+    if (!auth) router.push('/login');
+  },
+});
+</script>
+
+<template>
+  <nav>
+    <h1>MyApp</h1>
+    <button v-if="isAuthenticated" @click="deauthenticate">Logout</button>
+    <button v-else @click="login">Login</button>
+  </nav>
+
+  <!-- Public — always rendered -->
+  <Announcements />
+
+  <!-- Private — unmounts on deauth, auto-cleans channels/topics -->
+  <Dashboard v-if="isAuthenticated" />
+  <PrivateInbox v-if="isAuthenticated" />
+</template>
+```
+
+```vue
+<!-- Announcements.vue — public, works for guests -->
+<script setup lang="ts">
+import { useSocketEvent } from '@gwakko/shared-websocket/vue';
+
+const announcement = useSocketEvent<{ text: string }>('announcement');
+</script>
+
+<template>
+  <div v-if="announcement" class="banner">{{ announcement.text }}</div>
+</template>
+```
+
+```vue
+<!-- PrivateInbox.vue — auth-aware channel + topics -->
+<script setup lang="ts">
+import {
+  useChannel,
+  useTopics,
+  useSocketEvent,
+} from '@gwakko/shared-websocket/vue';
+
+// Channel with { auth: true } → auto-leaves on deauth or unmount
+const inbox = useChannel('user:inbox', { auth: true });
+
+// Topics with { auth: true } → auto-unsubscribe on deauth or unmount
+useTopics(['notifications:orders', 'notifications:payments'], { auth: true });
+
+const message = useSocketEvent<{ text: string }>('user:inbox:message');
+const notification = useSocketEvent<{ title: string }>('notifications:orders:new');
+</script>
+
+<template>
+  <div>
+    <p v-if="message">Inbox: {{ message.text }}</p>
+    <p v-if="notification">Order: {{ notification.title }}</p>
+  </div>
 </template>
 ```

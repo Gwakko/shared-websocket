@@ -56,6 +56,42 @@ export function useSharedWebSocket(): SharedWebSocket {
   return socket;
 }
 
+/**
+ * Reactive auth state with authenticate/deauthenticate actions.
+ * Syncs across all tabs.
+ *
+ * @example
+ * const { isAuthenticated, authenticate, deauthenticate } = useAuth();
+ *
+ * async function login(email: string, password: string) {
+ *   const { token } = await api.login(email, password);
+ *   authenticate(token);
+ * }
+ *
+ * @example
+ * // In template: <button v-if="isAuthenticated" @click="deauthenticate">Logout</button>
+ */
+export function useAuth(): {
+  isAuthenticated: Ref<boolean>;
+  authenticate: (token: string) => void;
+  deauthenticate: () => void;
+} {
+  const socket = useSharedWebSocket();
+  const isAuthenticated = ref(socket.isAuthenticated);
+
+  const unsub = socket.onAuthChange((authenticated: boolean) => {
+    isAuthenticated.value = authenticated;
+  });
+
+  onUnmounted(unsub);
+
+  return {
+    isAuthenticated: readonly(isAuthenticated) as Ref<boolean>,
+    authenticate: (token: string) => socket.authenticate(token),
+    deauthenticate: () => socket.deauthenticate(),
+  };
+}
+
 // ─── Composables ─────────────────────────────────────────
 
 /**
@@ -198,14 +234,17 @@ export function useSocketCallback<T>(event: string, callback: (data: T) => void)
 export function useSocketStatus(): {
   connected: Ref<boolean>;
   tabRole: Ref<TabRole>;
+  isAuthenticated: Ref<boolean>;
 } {
   const socket = useSharedWebSocket();
   const connected = ref(socket.connected);
   const tabRole = ref<TabRole>(socket.tabRole);
+  const isAuthenticated = ref(socket.isAuthenticated);
 
   const timer = setInterval(() => {
     connected.value = socket.connected;
     tabRole.value = socket.tabRole;
+    isAuthenticated.value = socket.isAuthenticated;
   }, 1000);
 
   onUnmounted(() => clearInterval(timer));
@@ -213,6 +252,7 @@ export function useSocketStatus(): {
   return {
     connected: readonly(connected) as Ref<boolean>,
     tabRole: readonly(tabRole) as Ref<TabRole>,
+    isAuthenticated: readonly(isAuthenticated) as Ref<boolean>,
   };
 }
 
@@ -240,6 +280,7 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
   if (handlers.onActive) unsubs.push(socket.onActive(handlers.onActive));
   if (handlers.onInactive) unsubs.push(socket.onInactive(handlers.onInactive));
   if (handlers.onVisibilityChange) unsubs.push(socket.onVisibilityChange(handlers.onVisibilityChange));
+  if (handlers.onAuthChange) unsubs.push(socket.onAuthChange(handlers.onAuthChange));
 
   onUnmounted(() => unsubs.forEach((u) => u()));
 }
@@ -252,9 +293,9 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
  * // Listen via useSocketEvent('chat:room_123:message')
  * // Send via chat.send('message', { text: 'Hello' })
  */
-export function useChannel(name: string) {
+export function useChannel(name: string, options?: { auth?: boolean }) {
   const socket = useSharedWebSocket();
-  const channel = socket.channel(name);
+  const channel = socket.channel(name, options);
 
   onUnmounted(() => channel.leave());
 
@@ -267,10 +308,10 @@ export function useChannel(name: string) {
  * @example
  * useTopics(['notifications:orders', 'notifications:payments']);
  */
-export function useTopics(topics: string[]): void {
+export function useTopics(topics: string[], options?: { auth?: boolean }): void {
   const socket = useSharedWebSocket();
 
-  topics.forEach((t) => socket.subscribe(t));
+  topics.forEach((t) => socket.subscribe(t, options));
 
   onUnmounted(() => {
     topics.forEach((t) => socket.unsubscribe(t));

@@ -32,6 +32,14 @@ Server → Client: { "event": "event.name", "data": { ... } }
 | `$channel:leave` | `channel.leave()` | `{ "channel": "chat:room_1" }` | Remove connection from channel |
 | `$topic:subscribe` | `ws.subscribe('topic')` | `{ "topic": "notifications:orders" }` | Start sending events for this topic to this connection |
 | `$topic:unsubscribe` | `ws.unsubscribe('topic')` | `{ "topic": "notifications:orders" }` | Stop sending events for this topic |
+| `$auth:login` | `ws.authenticate(token)` | `{ "token": "jwt..." }` | Verify token, set authenticated state for this connection |
+| `$auth:logout` | `ws.deauthenticate()` | `{}` | Clear auth state, remove from auth-required channels/topics |
+
+### Server → Client Events
+
+| Event | When | Payload | Effect |
+|-------|------|---------|--------|
+| `$auth:revoked` | Token expired, user kicked | `{ "reason": "token_expired" }` | Client auto-leaves auth channels/topics, sets `isAuthenticated = false` |
 
 ## Node.js (ws) — Complete Server Example
 
@@ -99,6 +107,28 @@ wss.on('connection', (ws, req) => {
 
       case '$topic:unsubscribe':
         state.topics.delete(data.topic);
+        break;
+
+      // ─── Auth Events ─────────────────────────
+
+      case '$auth:login': {
+        const user = verifyToken(data.token);
+        if (!user) {
+          send(ws, '$auth:revoked', { reason: 'invalid_token' });
+          break;
+        }
+        state.userId = user.id;
+        state.authenticated = true;
+        console.log(`${user.id} authenticated via runtime auth`);
+        break;
+      }
+
+      case '$auth:logout':
+        state.channels.clear();
+        state.topics.clear();
+        state.userId = undefined;
+        state.authenticated = false;
+        console.log('Client deauthenticated');
         break;
 
       // ─── App Events ──────────────────────────
@@ -262,6 +292,26 @@ func handleMessage(conn *websocket.Conn, state *ClientState, msg Message) {
         json.Unmarshal(msg.Data, &payload)
         delete(state.Topics, payload.Topic)
 
+    case "$auth:login":
+        var payload struct{ Token string `json:"token"` }
+        json.Unmarshal(msg.Data, &payload)
+        user, err := verifyToken(payload.Token)
+        if err != nil {
+            conn.WriteJSON(Message{
+                Event: "$auth:revoked",
+                Data:  json.RawMessage(`{"reason":"invalid_token"}`),
+            })
+            return
+        }
+        state.UserID = user.ID
+        state.Authenticated = true
+
+    case "$auth:logout":
+        state.Channels = make(map[string]bool)
+        state.Topics = make(map[string]bool)
+        state.UserID = ""
+        state.Authenticated = false
+
     case "chat.send":
         // broadcast to channel...
 
@@ -301,6 +351,8 @@ public function onMessage(ConnectionInterface $conn, $msg): void
         '$channel:leave' => $this->leaveChannel($conn, $payload['channel']),
         '$topic:subscribe' => $this->subscribeTopic($conn, $payload['topic']),
         '$topic:unsubscribe' => $this->unsubscribeTopic($conn, $payload['topic']),
+        '$auth:login' => $this->authenticateConnection($conn, $payload['token']),
+        '$auth:logout' => $this->deauthenticateConnection($conn),
         'chat.send' => $this->handleChatMessage($conn, $payload),
         'ping' => $conn->send(json_encode(['type' => 'pong'])),
         default => logger()->warning("Unknown event: {$event}"),
@@ -331,6 +383,40 @@ public function sendPushNotification(string $userId, array $notification): void
             ]));
         }
     }
+}
+
+// Authenticate connection
+public function authenticateConnection(ConnectionInterface $conn, string $token): void
+{
+    $user = $this->verifyToken($token);
+    if (!$user) {
+        $conn->send(json_encode([
+            'event' => '$auth:revoked',
+            'data' => ['reason' => 'invalid_token'],
+        ]));
+        return;
+    }
+    $this->setUserId($conn, $user->id);
+    $this->setAuthenticated($conn, true);
+}
+
+// Deauthenticate connection — clean up all auth state
+public function deauthenticateConnection(ConnectionInterface $conn): void
+{
+    $this->leaveAllChannels($conn);
+    $this->unsubscribeAllTopics($conn);
+    $this->setUserId($conn, null);
+    $this->setAuthenticated($conn, false);
+}
+
+// Revoke auth (token expired, admin kick)
+public function revokeAuth(ConnectionInterface $conn, string $reason = 'token_expired'): void
+{
+    $conn->send(json_encode([
+        'event' => '$auth:revoked',
+        'data' => ['reason' => $reason],
+    ]));
+    $this->deauthenticateConnection($conn);
 }
 
 // Usage:

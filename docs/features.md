@@ -22,6 +22,10 @@ Deep dive into all Shared WebSocket features with examples for Vanilla, React, a
 - [Stream — Consume Events as Async Iterator](#stream--consume-events-as-async-iterator)
 - [Request — Request/Response Through Server](#request--requestresponse-through-server)
 - [File Upload with Progress](#file-upload-with-progress)
+- [Runtime Authentication](#runtime-authentication)
+  - [Guest → Authenticated flow](#guest--authenticated-flow)
+  - [Auth-aware channels and topics](#auth-aware-channels-and-topics)
+  - [Server-initiated revocation](#server-initiated-revocation)
 
 ## Typed Events
 
@@ -810,3 +814,289 @@ case 'file.upload.complete': {
 ```
 
 > **When to use HTTP instead:** Files > 10MB, need resume on disconnect, need server-side validation before accepting, CDN upload (S3 presigned URL). WebSocket chunked upload is best for small files (< 5MB) where real-time progress is needed and you're already connected.
+
+## Runtime Authentication
+
+WebSocket is often a **global instance** — connected before knowing if the user is logged in. Runtime auth lets you authenticate/deauthenticate on an existing connection without reconnecting.
+
+**Key behaviors:**
+- `authenticate(token)` sends `$auth:login` to server, syncs auth state across all tabs
+- `deauthenticate()` auto-leaves all auth-required channels/topics, sends `$auth:logout`
+- Server can send `$auth:revoked` to force deauthenticate (expired token, kicked user)
+- Auth state survives leader failover and reconnects (token stored in cross-tab sync, re-sent on reconnect)
+- Connection stays open after deauth — public events keep working
+
+### Guest → Authenticated flow
+
+**Vanilla TypeScript**
+
+```typescript
+const ws = new SharedWebSocket('wss://api.example.com/ws');
+await ws.connect();
+
+// Works immediately — public events
+ws.on('announcement', (msg) => console.log(msg));
+
+// User logs in → authenticate on existing connection
+async function login(email: string, password: string) {
+  const { token } = await fetch('/api/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  }).then(r => r.json());
+
+  ws.authenticate(token);
+  // → sends { event: "$auth:login", data: { token } } to server
+}
+
+// User logs out → deauthenticate, connection stays open
+function logout() {
+  ws.deauthenticate();
+  // → auto-leaves auth channels/topics
+  // → sends { event: "$auth:logout" } to server
+  // → public events still work
+}
+
+// React to auth changes
+ws.onAuthChange((authenticated) => {
+  if (!authenticated) {
+    window.location.href = '/login';
+  }
+});
+```
+
+**React**
+
+```tsx
+import { useAuth, useSocketLifecycle } from '@gwakko/shared-websocket/react';
+
+// Login page
+function LoginPage() {
+  const { authenticate } = useAuth();
+
+  const handleLogin = async (email: string, password: string) => {
+    const { token } = await api.login(email, password);
+    authenticate(token); // syncs across all tabs
+  };
+
+  return <LoginForm onSubmit={handleLogin} />;
+}
+
+// Header with auth-aware UI
+function Header() {
+  const { isAuthenticated, deauthenticate } = useAuth();
+
+  return (
+    <nav>
+      {isAuthenticated
+        ? <button onClick={deauthenticate}>Logout</button>
+        : <Link to="/login">Login</Link>
+      }
+    </nav>
+  );
+}
+
+// Conditional rendering — private components unmount on deauth
+function App() {
+  const { isAuthenticated } = useAuth();
+
+  return (
+    <>
+      <Header />
+      <PublicFeed />
+      {isAuthenticated && <PrivateNotifications />}
+      {isAuthenticated && <PrivateChat />}
+    </>
+  );
+}
+
+// Lifecycle hook
+useSocketLifecycle({
+  onAuthChange: (authenticated) => {
+    if (!authenticated) navigate('/login');
+  },
+});
+```
+
+**Vue**
+
+```vue
+<script setup lang="ts">
+import { useAuth, useSocketLifecycle } from '@gwakko/shared-websocket/vue';
+
+const { isAuthenticated, authenticate, deauthenticate } = useAuth();
+
+async function login(email: string, password: string) {
+  const { token } = await api.login(email, password);
+  authenticate(token);
+}
+
+useSocketLifecycle({
+  onAuthChange: (authenticated) => {
+    if (!authenticated) router.push('/login');
+  },
+});
+</script>
+
+<template>
+  <nav>
+    <button v-if="isAuthenticated" @click="deauthenticate">Logout</button>
+    <router-link v-else to="/login">Login</router-link>
+  </nav>
+
+  <PublicFeed />
+  <PrivateNotifications v-if="isAuthenticated" />
+  <PrivateChat v-if="isAuthenticated" />
+</template>
+```
+
+### Auth-aware channels and topics
+
+Mark channels and topics with `{ auth: true }` — they auto-cleanup on deauthenticate or server revocation.
+
+**Vanilla TypeScript**
+
+```typescript
+const ws = new SharedWebSocket('wss://api.example.com/ws');
+await ws.connect();
+
+// After login
+ws.authenticate(token);
+
+// Auth-required channel — auto-leaves on deauth
+const chat = ws.channel('chat:private_room', { auth: true });
+chat.on('message', (msg) => render(msg));
+chat.send('message', { text: 'Hello' });
+
+// Auth-required topics — auto-unsubscribe on deauth
+ws.subscribe('notifications:orders', { auth: true });
+ws.subscribe(`user:${userId}:mentions`, { auth: true });
+
+// Public channel — NOT affected by deauth
+const lobby = ws.channel('chat:lobby');
+lobby.on('message', (msg) => render(msg));
+
+// On logout: auth channels/topics auto-cleaned, public channel stays
+ws.deauthenticate();
+// chat → auto-left, topics → auto-unsubscribed
+// lobby → still active
+```
+
+**React**
+
+```tsx
+import { useAuth, useChannel, useTopics } from '@gwakko/shared-websocket/react';
+
+function PrivateChat({ roomId }: { roomId: string }) {
+  // Auth-aware channel — auto-leaves on deauth + unmount
+  const chat = useChannel(`chat:${roomId}`, { auth: true });
+
+  // Auth-aware topics
+  useTopics([`user:${userId}:mentions`], { auth: true });
+
+  return <ChatUI channel={chat} />;
+}
+
+// Mount only when authenticated — clean lifecycle
+function App() {
+  const { isAuthenticated } = useAuth();
+
+  return (
+    <>
+      {isAuthenticated && <PrivateChat roomId="private_room" />}
+      <PublicLobby /> {/* always mounted */}
+    </>
+  );
+}
+```
+
+**Vue**
+
+```vue
+<script setup lang="ts">
+import { useAuth, useChannel, useTopics } from '@gwakko/shared-websocket/vue';
+
+const { isAuthenticated } = useAuth();
+
+// Auth-aware channel
+const chat = useChannel('chat:private_room', { auth: true });
+
+// Auth-aware topics
+useTopics(['notifications:orders'], { auth: true });
+</script>
+
+<template>
+  <ChatUI v-if="isAuthenticated" :channel="chat" />
+  <PublicLobby />
+</template>
+```
+
+### Server-initiated revocation
+
+Server sends `$auth:revoked` when token expires, user is kicked, or permissions change. Client auto-cleans all auth subscriptions.
+
+**Server (Node.js)**
+
+```typescript
+// Token expired — revoke auth
+function onTokenExpired(ws: WebSocket) {
+  ws.send(JSON.stringify({
+    event: '$auth:revoked',
+    data: { reason: 'token_expired' },
+  }));
+  // Server-side cleanup of channels/topics for this connection
+}
+
+// Handle client auth events
+case '$auth:login': {
+  const { token } = data;
+  const user = verifyToken(token);
+  if (!user) {
+    // Invalid token — immediately revoke
+    send(ws, '$auth:revoked', { reason: 'invalid_token' });
+    return;
+  }
+  state.userId = user.id;
+  state.authenticated = true;
+  console.log(`${user.id} authenticated`);
+  break;
+}
+
+case '$auth:logout': {
+  // Clean up all auth-related state for this connection
+  state.channels.clear();
+  state.topics.clear();
+  state.userId = undefined;
+  state.authenticated = false;
+  console.log('Client deauthenticated');
+  break;
+}
+```
+
+**Client handling** — automatic, no code needed:
+
+```typescript
+// All of this happens automatically when server sends $auth:revoked:
+// 1. Auth channels → auto-left
+// 2. Auth topics → auto-unsubscribed
+// 3. isAuthenticated → false
+// 4. onAuthChange callbacks fire
+// 5. React/Vue components re-render
+
+// Optional: listen for revocation reason
+ws.on('$auth:revoked', (data) => {
+  const { reason } = data as { reason: string };
+  if (reason === 'token_expired') {
+    showToast('Session expired, please log in again');
+  }
+});
+```
+
+### System events for auth
+
+| Event | Direction | When | Payload |
+|-------|-----------|------|---------|
+| `$auth:login` | Client → Server | `ws.authenticate(token)` | `{ "token": "..." }` |
+| `$auth:logout` | Client → Server | `ws.deauthenticate()` | `{}` |
+| `$auth:revoked` | Server → Client | Token expired, user kicked | `{ "reason": "..." }` |
+
+> **Note:** These event names are configurable via `events` option: `events: { authLogin: 'auth.login', authLogout: 'auth.logout', authRevoked: 'auth.kicked' }`

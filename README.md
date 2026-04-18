@@ -77,6 +77,11 @@ await withSocket('wss://api.example.com/ws', {
     title: (n) => n.title,                  // + browser Notification
     target: 'active',                       // active | leader | all
   });
+
+  // Runtime auth — authenticate/deauthenticate without reconnecting
+  ws.authenticate(token);                   // → sends $auth:login to server
+  const chat = ws.channel('chat:private', { auth: true }); // auto-leaves on deauth
+  ws.deauthenticate();                      // → auto-leaves auth channels/topics
 });
 ```
 
@@ -86,6 +91,7 @@ await withSocket('wss://api.example.com/ws', {
 import {
   SharedWebSocketProvider,
   useSharedWebSocket,
+  useAuth,
   useSocketEvent,
   useSocketStream,
   useSocketSync,
@@ -110,6 +116,7 @@ function App() {
 
 function Dashboard() {
   const ws = useSharedWebSocket();
+  const { isAuthenticated, authenticate, deauthenticate } = useAuth();
   const order = useSocketEvent<Order>('order.created');
   const [cart, setCart] = useSocketSync('cart', { items: [] });
   const { connected, tabRole } = useSocketStatus();
@@ -123,10 +130,11 @@ function Dashboard() {
   useSocketLifecycle({
     onConnect: () => toast.success('Connected'),
     onActive: () => refreshData(),
+    onAuthChange: (auth) => !auth && navigate('/login'),
   });
 
-  // Channel
-  const chat = useChannel(`chat:${roomId}`);
+  // Auth-aware channel — auto-leaves on deauth
+  const chat = useChannel(`chat:${roomId}`, { auth: true });
 
   // Topics
   useTopics(['notifications:orders']);
@@ -155,6 +163,7 @@ app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
 <script setup lang="ts">
 import {
   useSharedWebSocket,
+  useAuth,
   useSocketEvent,
   useSocketSync,
   useSocketLifecycle,
@@ -164,15 +173,18 @@ import {
 } from '@gwakko/shared-websocket/vue';
 
 const ws = useSharedWebSocket();
+const { isAuthenticated, authenticate, deauthenticate } = useAuth();
 const order = useSocketEvent<Order>('order.created');
 const cart = useSocketSync('cart', { items: [] });
 
 useSocketLifecycle({
   onConnect: () => toast.success('Connected'),
   onActive: () => refreshData(),
+  onAuthChange: (auth) => { if (!auth) router.push('/login'); },
 });
 
-const chat = useChannel(`chat:${roomId}`);
+// Auth-aware channel — auto-leaves on deauth
+const chat = useChannel(`chat:${roomId}`, { auth: true });
 useTopics(['notifications:orders']);
 
 usePush('notification', {
@@ -196,10 +208,11 @@ usePush('notification', {
 | **Worker Mode** | `useWorker: true` — WebSocket off main thread |
 | **Custom Serialization** | `serialize`/`deserialize` — JSON, MessagePack, Protobuf |
 | **Per-Event Serializers** | `ws.serializer(event, fn)` — binary for specific events |
-| **Lifecycle Hooks** | onConnect, onDisconnect, onActive, onInactive, onLeaderChange |
+| **Runtime Auth** | `authenticate(token)` / `deauthenticate()` on existing connection |
+| **Lifecycle Hooks** | onConnect, onDisconnect, onActive, onInactive, onLeaderChange, onAuthChange |
 | **Debug/Logger** | `debug: true` + injectable logger (pino, Sentry) |
 | **Event Protocol** | Configurable field names (Socket.IO, Phoenix, Laravel Echo) |
-| **Auth** | `auth` callback, `authToken` string, custom `authParam` |
+| **Auth** | URL param (`auth` callback / `authToken`) + runtime `authenticate()`/`deauthenticate()` |
 | **Zero Dependencies** | Pure browser APIs |
 
 ## Processing Pipeline

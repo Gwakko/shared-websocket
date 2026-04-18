@@ -78,6 +78,55 @@ export function useSharedWebSocket(): SharedWebSocket {
   return ctx;
 }
 
+/**
+ * Reactive auth state with authenticate/deauthenticate actions.
+ * Syncs across all tabs via BroadcastChannel.
+ *
+ * @example
+ * function LoginPage() {
+ *   const { authenticate } = useAuth();
+ *   const login = async (email: string, password: string) => {
+ *     const { token } = await api.login(email, password);
+ *     authenticate(token);
+ *   };
+ *   return <button onClick={() => login('user@test.com', 'pass')}>Login</button>;
+ * }
+ *
+ * @example
+ * function Header() {
+ *   const { isAuthenticated, deauthenticate } = useAuth();
+ *   return isAuthenticated
+ *     ? <button onClick={deauthenticate}>Logout</button>
+ *     : <Link to="/login">Login</Link>;
+ * }
+ */
+export function useAuth(): {
+  isAuthenticated: boolean;
+  authenticate: (token: string) => void;
+  deauthenticate: () => void;
+} {
+  const socket = useSharedWebSocket();
+  const [isAuthenticated, setIsAuthenticated] = useState(socket.isAuthenticated);
+
+  const onAuthChange = useEffectEvent((authenticated: boolean) => {
+    setIsAuthenticated(authenticated);
+  });
+
+  useEffect(() => {
+    return socket.onAuthChange(onAuthChange);
+  }, [socket]);
+
+  const authenticate = useEffectEvent((token: string) => {
+    socket.authenticate(token);
+  });
+
+  const deauthenticate = useEffectEvent(() => {
+    socket.deauthenticate();
+  });
+
+  return { isAuthenticated, authenticate, deauthenticate };
+}
+
 // ─── Hooks ───────────────────────────────────────────────
 
 /**
@@ -253,14 +302,17 @@ export function useSocketCallback<T>(event: string, callback: (data: T) => void)
 export function useSocketStatus(): {
   connected: boolean;
   tabRole: TabRole;
+  isAuthenticated: boolean;
 } {
   const socket = useSharedWebSocket();
   const [connected, setConnected] = useState(socket.connected);
   const [tabRole, setTabRole] = useState<TabRole>(socket.tabRole);
+  const [isAuthenticated, setIsAuthenticated] = useState(socket.isAuthenticated);
 
   const tick = useEffectEvent(() => {
     setConnected(socket.connected);
     setTabRole(socket.tabRole);
+    setIsAuthenticated(socket.isAuthenticated);
   });
 
   useEffect(() => {
@@ -268,7 +320,7 @@ export function useSocketStatus(): {
     return () => clearInterval(interval);
   }, [socket]);
 
-  return { connected, tabRole };
+  return { connected, tabRole, isAuthenticated };
 }
 
 /**
@@ -294,6 +346,7 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
   const onActive = useEffectEvent(() => handlers.onActive?.());
   const onInactive = useEffectEvent(() => handlers.onInactive?.());
   const onVisibilityChange = useEffectEvent((isActive: boolean) => handlers.onVisibilityChange?.(isActive));
+  const onAuthChange = useEffectEvent((authenticated: boolean) => handlers.onAuthChange?.(authenticated));
 
   useEffect(() => {
     const unsubs = [
@@ -305,6 +358,7 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
       socket.onActive(onActive),
       socket.onInactive(onInactive),
       socket.onVisibilityChange(onVisibilityChange),
+      socket.onAuthChange(onAuthChange),
     ];
     return () => unsubs.forEach((u) => u());
   }, [socket]);
@@ -323,12 +377,12 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
  * const notifications = useChannel(`tenant:${tenantId}:notifications`);
  * useSocketCallback(`tenant:${tenantId}:notifications:alert`, showToast);
  */
-export function useChannel(name: string) {
+export function useChannel(name: string, options?: { auth?: boolean }) {
   const socket = useSharedWebSocket();
-  const channelRef = useRef(socket.channel(name));
+  const channelRef = useRef(socket.channel(name, options));
 
   useEffect(() => {
-    channelRef.current = socket.channel(name);
+    channelRef.current = socket.channel(name, options);
     return () => channelRef.current.leave();
   }, [socket, name]);
 
@@ -342,11 +396,11 @@ export function useChannel(name: string) {
  * useTopics(['notifications:orders', 'notifications:payments']);
  * useTopics([`user:${userId}:mentions`]);
  */
-export function useTopics(topics: string[]): void {
+export function useTopics(topics: string[], options?: { auth?: boolean }): void {
   const socket = useSharedWebSocket();
 
   useEffect(() => {
-    topics.forEach((t) => socket.subscribe(t));
+    topics.forEach((t) => socket.subscribe(t, options));
     return () => topics.forEach((t) => socket.unsubscribe(t));
   }, [socket, topics.join(',')]);
 }
