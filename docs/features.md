@@ -819,12 +819,76 @@ case 'file.upload.complete': {
 
 WebSocket is often a **global instance** — connected before knowing if the user is logged in. Runtime auth lets you authenticate/deauthenticate on an existing connection without reconnecting.
 
-**Key behaviors:**
-- `authenticate(token)` sends `$auth:login` to server, syncs auth state across all tabs
-- `deauthenticate()` auto-leaves all auth-required channels/topics, sends `$auth:logout`
-- Server can send `$auth:revoked` to force deauthenticate (expired token, kicked user)
-- Auth state survives leader failover and reconnects (token stored in cross-tab sync, re-sent on reconnect)
-- Connection stays open after deauth — public events keep working
+### What happens on each action
+
+#### `ws.authenticate(token)` — login
+
+| # | What happens | Scope |
+|---|-------------|-------|
+| 1 | `isAuthenticated` → `true` | this tab |
+| 2 | Token stored in cross-tab sync store | all tabs |
+| 3 | Sends `$auth:login` event with token to server | server |
+| 4 | Auth state broadcast via BroadcastChannel | all tabs |
+| 5 | `onAuthChange(true)` fires | all tabs |
+| 6 | React: `useSocketAuth()` re-renders with `isAuthenticated: true` | all tabs |
+| 7 | Vue: `useSocketAuth().isAuthenticated` ref updates | all tabs |
+| 8 | `useSocketLifecycle({ onAuthChange })` fires | all tabs |
+| 9 | Conditionally rendered components (`{isAuthenticated && <Private />}`) mount | all tabs |
+
+#### `ws.deauthenticate()` — logout
+
+| # | What happens | Scope |
+|---|-------------|-------|
+| 1 | All `{ auth: true }` channels → auto `leave()` (sends `$channel:leave` + cleans local handlers) | server + this tab |
+| 2 | All `{ auth: true }` topics → auto `unsubscribe()` (sends `$topic:unsubscribe`) | server + this tab |
+| 3 | `isAuthenticated` → `false` | this tab |
+| 4 | Sends `$auth:logout` event to server | server |
+| 5 | Token removed from cross-tab sync store | all tabs |
+| 6 | Auth state broadcast via BroadcastChannel | all tabs |
+| 7 | Other tabs: clear their auth channel/topic tracking | all tabs |
+| 8 | `onAuthChange(false)` fires | all tabs |
+| 9 | React/Vue: `useSocketAuth()` re-renders with `isAuthenticated: false` | all tabs |
+| 10 | Conditionally rendered components (`{isAuthenticated && <Private />}`) unmount → `useChannel`/`useTopics` cleanup runs | all tabs |
+| 11 | **Public channels, topics, and event listeners keep working** | all tabs |
+| 12 | **WebSocket connection stays open** | leader tab |
+
+#### Server sends `$auth:revoked` — forced deauth
+
+| # | What happens | Scope |
+|---|-------------|-------|
+| 1 | Leader receives event, broadcasts to all tabs via BroadcastChannel | all tabs |
+| 2 | Leader: auto `leave()` for auth channels, `unsubscribe()` for auth topics | server |
+| 3 | All tabs: clear auth channel/topic tracking | all tabs |
+| 4 | `isAuthenticated` → `false` | all tabs |
+| 5 | Token removed from sync store | all tabs |
+| 6 | `onAuthChange(false)` fires | all tabs |
+| 7 | `ws.on('$auth:revoked', handler)` fires — access `reason` field | all tabs |
+| 8 | React/Vue components re-render, private components unmount | all tabs |
+
+#### Leader failover / reconnect
+
+| # | What happens | Scope |
+|---|-------------|-------|
+| 1 | New leader elected, creates WebSocket, connects | new leader |
+| 2 | If `isAuthenticated` — re-sends `$auth:login` with stored token | server |
+| 3 | Re-sends `$channel:join` for all auth channels | server |
+| 4 | Re-sends `$topic:subscribe` for all auth topics | server |
+| 5 | **No user code needed — fully automatic** | — |
+
+### What is NOT affected by deauthenticate
+
+These keep working after `deauthenticate()` — the connection stays open:
+
+- `ws.on(event, handler)` — public event listeners
+- `ws.send(event, data)` — sending public events
+- `ws.channel(name)` — channels without `{ auth: true }`
+- `ws.subscribe(topic)` — topics without `{ auth: true }`
+- `ws.sync(key, value)` / `ws.onSync()` — cross-tab state sync
+- `ws.push(event, config)` — push notifications for public events
+- `ws.stream(event)` — async generators for public events
+- `ws.request(event, data)` — request/response for public events
+- Lifecycle hooks: `onConnect`, `onDisconnect`, `onReconnecting`, `onLeaderChange`
+- Tab visibility: `onActive`, `onInactive`, `onVisibilityChange`
 
 ### Guest → Authenticated flow
 
