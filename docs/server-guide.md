@@ -51,6 +51,7 @@ const wss = new WebSocketServer({ port: 8080 });
 // Track per-connection state
 interface ClientState {
   userId?: string;
+  authenticated: boolean;
   channels: Set<string>;
   topics: Set<string>;
 }
@@ -58,20 +59,25 @@ interface ClientState {
 const clients = new Map<WebSocket, ClientState>();
 
 wss.on('connection', (ws, req) => {
-  // Extract auth token from URL
+  // Optional: extract auth token from URL (connect-time auth)
   const url = new URL(req.url!, `http://${req.headers.host}`);
   const token = url.searchParams.get('token');
-  const userId = verifyToken(token);  // your auth logic
+  const user = token ? verifyToken(token) : null;
 
   const state: ClientState = {
-    userId,
+    userId: user?.id,
+    authenticated: !!user,
     channels: new Set(),
     topics: new Set(),
   };
   clients.set(ws, state);
 
-  // Send welcome
-  send(ws, 'welcome', { userId, timestamp: Date.now() });
+  // Send welcome (works for guests too)
+  send(ws, 'welcome', {
+    userId: state.userId ?? null,
+    authenticated: state.authenticated,
+    timestamp: Date.now(),
+  });
 
   ws.on('message', (raw) => {
     const msg = JSON.parse(raw.toString());
@@ -81,32 +87,7 @@ wss.on('connection', (ws, req) => {
       // ─── System Events ───────────────────────
 
       case 'ping':
-        // Respond to heartbeat (optional — some servers ignore pings)
         ws.send(JSON.stringify({ type: 'pong' }));
-        break;
-
-      // ─── Channel Events ──────────────────────
-
-      case '$channel:join':
-        state.channels.add(data.channel);
-        console.log(`${userId} joined ${data.channel}`);
-        // Send channel history, presence, etc.
-        break;
-
-      case '$channel:leave':
-        state.channels.delete(data.channel);
-        console.log(`${userId} left ${data.channel}`);
-        break;
-
-      // ─── Topic Events ────────────────────────
-
-      case '$topic:subscribe':
-        state.topics.add(data.topic);
-        console.log(`${userId} subscribed to ${data.topic}`);
-        break;
-
-      case '$topic:unsubscribe':
-        state.topics.delete(data.topic);
         break;
 
       // ─── Auth Events ─────────────────────────
@@ -120,34 +101,82 @@ wss.on('connection', (ws, req) => {
         state.userId = user.id;
         state.authenticated = true;
         console.log(`${user.id} authenticated via runtime auth`);
+        // Optionally send confirmation with user data
+        send(ws, 'auth.ok', { userId: user.id, roles: user.roles });
         break;
       }
 
       case '$auth:logout':
+        console.log(`${state.userId} deauthenticated`);
+        // Clean up ALL auth-related state for this connection
         state.channels.clear();
         state.topics.clear();
         state.userId = undefined;
         state.authenticated = false;
-        console.log('Client deauthenticated');
         break;
 
-      // ─── App Events ──────────────────────────
+      // ─── Channel Events ──────────────────────
 
-      case 'chat.send':
-        // Broadcast to all clients in the same channel
+      case '$channel:join':
+        // Guard: private channels require auth
+        if (isPrivateChannel(data.channel) && !state.authenticated) {
+          send(ws, 'error', { message: 'Authentication required', channel: data.channel });
+          break;
+        }
+        state.channels.add(data.channel);
+        console.log(`${state.userId ?? 'guest'} joined ${data.channel}`);
+        break;
+
+      case '$channel:leave':
+        state.channels.delete(data.channel);
+        console.log(`${state.userId ?? 'guest'} left ${data.channel}`);
+        break;
+
+      // ─── Topic Events ────────────────────────
+
+      case '$topic:subscribe':
+        // Guard: some topics require auth
+        if (isPrivateTopic(data.topic) && !state.authenticated) {
+          send(ws, 'error', { message: 'Authentication required', topic: data.topic });
+          break;
+        }
+        state.topics.add(data.topic);
+        console.log(`${state.userId ?? 'guest'} subscribed to ${data.topic}`);
+        break;
+
+      case '$topic:unsubscribe':
+        state.topics.delete(data.topic);
+        break;
+
+      // ─── App Events (public) ─────────────────
+
+      case 'chat.send': {
         const channel = data.roomId ? `chat:${data.roomId}` : null;
         broadcastToChannel(channel, 'chat.message', {
           id: crypto.randomUUID(),
-          userId: state.userId,
+          userId: state.userId ?? 'guest',
           text: data.text,
           timestamp: Date.now(),
         });
         break;
+      }
 
       case 'chat.typing':
         broadcastToChannel(`chat:${data.roomId}`, 'chat.typing', {
-          userId: state.userId,
-        }, ws);  // exclude sender
+          userId: state.userId ?? 'guest',
+        }, ws);
+        break;
+
+      // ─── App Events (auth required) ──────────
+
+      case 'order.create':
+        if (!requireAuth(ws, state)) break;
+        // ... create order logic
+        break;
+
+      case 'profile.update':
+        if (!requireAuth(ws, state)) break;
+        // ... update profile logic
         break;
 
       default:
@@ -166,6 +195,25 @@ function send(ws: WebSocket, event: string, data: unknown) {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ event, data }));
   }
+}
+
+/** Guard — returns false and sends error if not authenticated */
+function requireAuth(ws: WebSocket, state: ClientState): boolean {
+  if (!state.authenticated) {
+    send(ws, 'error', { message: 'Authentication required' });
+    return false;
+  }
+  return true;
+}
+
+function isPrivateChannel(channel: string): boolean {
+  // Convention: private channels start with "private:" or "user:"
+  return channel.startsWith('private:') || channel.startsWith('user:');
+}
+
+function isPrivateTopic(topic: string): boolean {
+  // Convention: user-specific topics require auth
+  return topic.startsWith('user:') || topic.startsWith('notifications:');
 }
 
 function broadcastToChannel(
@@ -188,21 +236,38 @@ function broadcastToTopic(topic: string, event: string, data: unknown) {
   }
 }
 
-// ─── Example: Send notifications by topic ────────
+// ─── Auth Revocation ─────────────────────────────
 
-function notifyNewOrder(order: Order) {
-  broadcastToTopic('notifications:orders', 'new', {
-    id: order.id,
-    total: order.total,
-    customer: order.customerName,
-  });
-  // Only clients who called ws.subscribe('notifications:orders') receive this
+/** Revoke auth for a specific user (token expired, admin action) */
+function revokeUser(userId: string, reason: string) {
+  for (const [ws, state] of clients) {
+    if (state.userId === userId) {
+      send(ws, '$auth:revoked', { reason });
+      // Server-side cleanup
+      state.channels.clear();
+      state.topics.clear();
+      state.userId = undefined;
+      state.authenticated = false;
+    }
+  }
+}
+
+// Token expiry check (run on interval or middleware)
+function checkTokenExpiry(ws: WebSocket, state: ClientState) {
+  if (state.authenticated && state.userId) {
+    const valid = isTokenStillValid(state.userId);
+    if (!valid) {
+      send(ws, '$auth:revoked', { reason: 'token_expired' });
+      state.channels.clear();
+      state.topics.clear();
+      state.userId = undefined;
+      state.authenticated = false;
+    }
+  }
 }
 
 // ─── Push Notifications ──────────────────────────
 
-// Client listens via: ws.push('notification', { render: ... })
-// Server sends 'notification' event — client shows toast/push
 function sendPushNotification(
   targetUserId: string,
   notification: { id: string; title: string; body: string; type: string; url?: string },
@@ -214,7 +279,6 @@ function sendPushNotification(
   }
 }
 
-// Broadcast push to all connected clients
 function broadcastPush(notification: { id: string; title: string; body: string; type: string }) {
   for (const [ws] of clients) {
     send(ws, 'notification', notification);
@@ -225,10 +289,8 @@ function broadcastPush(notification: { id: string; title: string; body: string; 
 
 // After order created — notify the merchant
 async function onOrderCreated(order: Order) {
-  // 1. Notify via topic (only subscribers)
   broadcastToTopic('notifications:orders', 'new', order);
 
-  // 2. Push notification to specific user
   sendPushNotification(order.merchantId, {
     id: `order-${order.id}`,
     title: `New Order #${order.id}`,
@@ -249,7 +311,12 @@ async function onPaymentFailed(payment: Payment) {
   });
 }
 
-// System maintenance — broadcast to everyone
+// Admin kicks user — revoke across all their connections
+async function onUserBanned(userId: string) {
+  revokeUser(userId, 'account_suspended');
+}
+
+// System maintenance — broadcast to everyone (guests + authenticated)
 async function onMaintenanceScheduled(time: string) {
   broadcastPush({
     id: `maintenance-${Date.now()}`,
@@ -263,18 +330,51 @@ async function onMaintenanceScheduled(time: string) {
 ## Go — Server Example
 
 ```go
-// Message format
 type Message struct {
     Event string          `json:"event"`
     Data  json.RawMessage `json:"data"`
 }
 
-// Handle incoming messages
+type ClientState struct {
+    UserID        string
+    Authenticated bool
+    Channels      map[string]bool
+    Topics        map[string]bool
+}
+
 func handleMessage(conn *websocket.Conn, state *ClientState, msg Message) {
     switch msg.Event {
+
+    // ─── Auth ──────────────────────────────────
+
+    case "$auth:login":
+        var payload struct{ Token string `json:"token"` }
+        json.Unmarshal(msg.Data, &payload)
+        user, err := verifyToken(payload.Token)
+        if err != nil {
+            sendJSON(conn, "$auth:revoked", map[string]string{"reason": "invalid_token"})
+            return
+        }
+        state.UserID = user.ID
+        state.Authenticated = true
+        sendJSON(conn, "auth.ok", map[string]string{"userId": user.ID})
+
+    case "$auth:logout":
+        state.Channels = make(map[string]bool)
+        state.Topics = make(map[string]bool)
+        state.UserID = ""
+        state.Authenticated = false
+
+    // ─── Channels ──────────────────────────────
+
     case "$channel:join":
         var payload struct{ Channel string `json:"channel"` }
         json.Unmarshal(msg.Data, &payload)
+        // Guard: private channels require auth
+        if isPrivateChannel(payload.Channel) && !state.Authenticated {
+            sendJSON(conn, "error", map[string]string{"message": "auth required"})
+            return
+        }
         state.Channels[payload.Channel] = true
 
     case "$channel:leave":
@@ -282,9 +382,15 @@ func handleMessage(conn *websocket.Conn, state *ClientState, msg Message) {
         json.Unmarshal(msg.Data, &payload)
         delete(state.Channels, payload.Channel)
 
+    // ─── Topics ────────────────────────────────
+
     case "$topic:subscribe":
         var payload struct{ Topic string `json:"topic"` }
         json.Unmarshal(msg.Data, &payload)
+        if isPrivateTopic(payload.Topic) && !state.Authenticated {
+            sendJSON(conn, "error", map[string]string{"message": "auth required"})
+            return
+        }
         state.Topics[payload.Topic] = true
 
     case "$topic:unsubscribe":
@@ -292,25 +398,7 @@ func handleMessage(conn *websocket.Conn, state *ClientState, msg Message) {
         json.Unmarshal(msg.Data, &payload)
         delete(state.Topics, payload.Topic)
 
-    case "$auth:login":
-        var payload struct{ Token string `json:"token"` }
-        json.Unmarshal(msg.Data, &payload)
-        user, err := verifyToken(payload.Token)
-        if err != nil {
-            conn.WriteJSON(Message{
-                Event: "$auth:revoked",
-                Data:  json.RawMessage(`{"reason":"invalid_token"}`),
-            })
-            return
-        }
-        state.UserID = user.ID
-        state.Authenticated = true
-
-    case "$auth:logout":
-        state.Channels = make(map[string]bool)
-        state.Topics = make(map[string]bool)
-        state.UserID = ""
-        state.Authenticated = false
+    // ─── App Events ────────────────────────────
 
     case "chat.send":
         // broadcast to channel...
@@ -320,16 +408,38 @@ func handleMessage(conn *websocket.Conn, state *ClientState, msg Message) {
     }
 }
 
-// Send push notification to specific user
-func sendPushNotification(userID string, title, body, notifType string) {
+func sendJSON(conn *websocket.Conn, event string, data interface{}) {
+    raw, _ := json.Marshal(data)
+    conn.WriteJSON(Message{Event: event, Data: raw})
+}
+
+// Revoke auth for a user across all connections
+func revokeUser(userID, reason string) {
     for conn, state := range clients {
         if state.UserID == userID {
-            conn.WriteJSON(Message{
-                Event: "notification",
-                Data:  json.RawMessage(fmt.Sprintf(
-                    `{"id":"%s","title":"%s","body":"%s","type":"%s"}`,
-                    uuid.NewString(), title, body, notifType,
-                )),
+            sendJSON(conn, "$auth:revoked", map[string]string{"reason": reason})
+            state.Channels = make(map[string]bool)
+            state.Topics = make(map[string]bool)
+            state.UserID = ""
+            state.Authenticated = false
+        }
+    }
+}
+
+func isPrivateChannel(ch string) bool {
+    return strings.HasPrefix(ch, "private:") || strings.HasPrefix(ch, "user:")
+}
+
+func isPrivateTopic(t string) bool {
+    return strings.HasPrefix(t, "user:") || strings.HasPrefix(t, "notifications:")
+}
+
+// Send push notification to specific user
+func sendPushNotification(userID, title, body, notifType string) {
+    for conn, state := range clients {
+        if state.UserID == userID {
+            sendJSON(conn, "notification", map[string]string{
+                "id": uuid.NewString(), "title": title, "body": body, "type": notifType,
             })
         }
     }
@@ -339,7 +449,30 @@ func sendPushNotification(userID string, title, body, notifType string) {
 ## PHP (Laravel + Ratchet/Swoole) — Server Example
 
 ```php
-// Handle incoming WebSocket message
+// Per-connection state
+private array $state = [];
+// $state[$resourceId] = [
+//     'userId' => null,
+//     'authenticated' => false,
+//     'channels' => [],
+//     'topics' => [],
+// ];
+
+public function onOpen(ConnectionInterface $conn): void
+{
+    $this->state[$conn->resourceId] = [
+        'userId' => null,
+        'authenticated' => false,
+        'channels' => [],
+        'topics' => [],
+    ];
+
+    $this->send($conn, 'welcome', [
+        'authenticated' => false,
+        'timestamp' => time(),
+    ]);
+}
+
 public function onMessage(ConnectionInterface $conn, $msg): void
 {
     $data = json_decode($msg, true);
@@ -347,86 +480,151 @@ public function onMessage(ConnectionInterface $conn, $msg): void
     $payload = $data['data'] ?? [];
 
     match ($event) {
-        '$channel:join' => $this->joinChannel($conn, $payload['channel']),
+        // Auth
+        '$auth:login' => $this->handleAuthLogin($conn, $payload['token']),
+        '$auth:logout' => $this->handleAuthLogout($conn),
+
+        // Channels (with auth guard)
+        '$channel:join' => $this->handleChannelJoin($conn, $payload['channel']),
         '$channel:leave' => $this->leaveChannel($conn, $payload['channel']),
-        '$topic:subscribe' => $this->subscribeTopic($conn, $payload['topic']),
+
+        // Topics (with auth guard)
+        '$topic:subscribe' => $this->handleTopicSubscribe($conn, $payload['topic']),
         '$topic:unsubscribe' => $this->unsubscribeTopic($conn, $payload['topic']),
-        '$auth:login' => $this->authenticateConnection($conn, $payload['token']),
-        '$auth:logout' => $this->deauthenticateConnection($conn),
+
+        // App events
         'chat.send' => $this->handleChatMessage($conn, $payload),
+        'order.create' => $this->handleOrderCreate($conn, $payload),
         'ping' => $conn->send(json_encode(['type' => 'pong'])),
         default => logger()->warning("Unknown event: {$event}"),
     };
 }
 
-// Send to topic subscribers
-public function notifyTopic(string $topic, string $event, array $data): void
-{
-    foreach ($this->connections as $conn) {
-        if (in_array($topic, $this->topics[$conn->resourceId] ?? [])) {
-            $conn->send(json_encode([
-                'event' => "{$topic}:{$event}",
-                'data' => $data,
-            ]));
-        }
-    }
-}
+// ─── Auth ────────────────────────────────────────
 
-// Send push notification to user
-public function sendPushNotification(string $userId, array $notification): void
-{
-    foreach ($this->connections as $conn) {
-        if ($this->getUserId($conn) === $userId) {
-            $conn->send(json_encode([
-                'event' => 'notification',
-                'data' => $notification,
-            ]));
-        }
-    }
-}
-
-// Authenticate connection
-public function authenticateConnection(ConnectionInterface $conn, string $token): void
+public function handleAuthLogin(ConnectionInterface $conn, string $token): void
 {
     $user = $this->verifyToken($token);
     if (!$user) {
-        $conn->send(json_encode([
-            'event' => '$auth:revoked',
-            'data' => ['reason' => 'invalid_token'],
-        ]));
+        $this->send($conn, '$auth:revoked', ['reason' => 'invalid_token']);
         return;
     }
-    $this->setUserId($conn, $user->id);
-    $this->setAuthenticated($conn, true);
+
+    $this->state[$conn->resourceId]['userId'] = $user->id;
+    $this->state[$conn->resourceId]['authenticated'] = true;
+
+    $this->send($conn, 'auth.ok', [
+        'userId' => $user->id,
+    ]);
 }
 
-// Deauthenticate connection — clean up all auth state
-public function deauthenticateConnection(ConnectionInterface $conn): void
+public function handleAuthLogout(ConnectionInterface $conn): void
 {
-    $this->leaveAllChannels($conn);
-    $this->unsubscribeAllTopics($conn);
-    $this->setUserId($conn, null);
-    $this->setAuthenticated($conn, false);
+    $id = $conn->resourceId;
+    logger()->info("User {$this->state[$id]['userId']} deauthenticated");
+
+    // Clean up all auth state
+    $this->state[$id]['channels'] = [];
+    $this->state[$id]['topics'] = [];
+    $this->state[$id]['userId'] = null;
+    $this->state[$id]['authenticated'] = false;
 }
 
-// Revoke auth (token expired, admin kick)
+/** Revoke auth — token expired, admin kick, etc. */
 public function revokeAuth(ConnectionInterface $conn, string $reason = 'token_expired'): void
 {
-    $conn->send(json_encode([
-        'event' => '$auth:revoked',
-        'data' => ['reason' => $reason],
-    ]));
-    $this->deauthenticateConnection($conn);
+    $this->send($conn, '$auth:revoked', ['reason' => $reason]);
+    $this->handleAuthLogout($conn);
 }
 
-// Usage:
-// $this->sendPushNotification($order->merchant_id, [
-//     'id' => Str::uuid(),
-//     'title' => "New Order #{$order->id}",
-//     'body' => "\${$order->total} from {$order->customer_name}",
-//     'type' => 'success',
-//     'url' => "/orders/{$order->id}",
-// ]);
+/** Revoke by user ID — affects all connections of that user */
+public function revokeUser(string $userId, string $reason = 'account_suspended'): void
+{
+    foreach ($this->connections as $conn) {
+        if (($this->state[$conn->resourceId]['userId'] ?? null) === $userId) {
+            $this->revokeAuth($conn, $reason);
+        }
+    }
+}
+
+// ─── Channels (with auth guard) ──────────────────
+
+public function handleChannelJoin(ConnectionInterface $conn, string $channel): void
+{
+    if ($this->isPrivateChannel($channel) && !$this->isAuthenticated($conn)) {
+        $this->send($conn, 'error', ['message' => 'Authentication required', 'channel' => $channel]);
+        return;
+    }
+    $this->state[$conn->resourceId]['channels'][] = $channel;
+}
+
+// ─── Topics (with auth guard) ────────────────────
+
+public function handleTopicSubscribe(ConnectionInterface $conn, string $topic): void
+{
+    if ($this->isPrivateTopic($topic) && !$this->isAuthenticated($conn)) {
+        $this->send($conn, 'error', ['message' => 'Authentication required', 'topic' => $topic]);
+        return;
+    }
+    $this->state[$conn->resourceId]['topics'][] = $topic;
+}
+
+// ─── App Events (auth required) ──────────────────
+
+public function handleOrderCreate(ConnectionInterface $conn, array $payload): void
+{
+    if (!$this->requireAuth($conn)) return;
+    // ... create order logic
+}
+
+// ─── Helpers ─────────────────────────────────────
+
+private function send(ConnectionInterface $conn, string $event, array $data): void
+{
+    $conn->send(json_encode(['event' => $event, 'data' => $data]));
+}
+
+private function isAuthenticated(ConnectionInterface $conn): bool
+{
+    return $this->state[$conn->resourceId]['authenticated'] ?? false;
+}
+
+private function requireAuth(ConnectionInterface $conn): bool
+{
+    if (!$this->isAuthenticated($conn)) {
+        $this->send($conn, 'error', ['message' => 'Authentication required']);
+        return false;
+    }
+    return true;
+}
+
+private function isPrivateChannel(string $channel): bool
+{
+    return str_starts_with($channel, 'private:') || str_starts_with($channel, 'user:');
+}
+
+private function isPrivateTopic(string $topic): bool
+{
+    return str_starts_with($topic, 'user:') || str_starts_with($topic, 'notifications:');
+}
+
+public function notifyTopic(string $topic, string $event, array $data): void
+{
+    foreach ($this->connections as $conn) {
+        if (in_array($topic, $this->state[$conn->resourceId]['topics'] ?? [])) {
+            $this->send($conn, "{$topic}:{$event}", $data);
+        }
+    }
+}
+
+public function sendPushNotification(string $userId, array $notification): void
+{
+    foreach ($this->connections as $conn) {
+        if (($this->state[$conn->resourceId]['userId'] ?? null) === $userId) {
+            $this->send($conn, 'notification', $notification);
+        }
+    }
+}
 ```
 
 ## Global Custom Serialization (MessagePack)
