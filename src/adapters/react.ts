@@ -84,7 +84,7 @@ export function useSharedWebSocket(): SharedWebSocket {
  *
  * @example
  * function LoginPage() {
- *   const { authenticate } = useAuth();
+ *   const { authenticate } = useSocketAuth();
  *   const login = async (email: string, password: string) => {
  *     const { token } = await api.login(email, password);
  *     authenticate(token);
@@ -94,13 +94,13 @@ export function useSharedWebSocket(): SharedWebSocket {
  *
  * @example
  * function Header() {
- *   const { isAuthenticated, deauthenticate } = useAuth();
+ *   const { isAuthenticated, deauthenticate } = useSocketAuth();
  *   return isAuthenticated
  *     ? <button onClick={deauthenticate}>Logout</button>
  *     : <Link to="/login">Login</Link>;
  * }
  */
-export function useAuth(): {
+export function useSocketAuth(): {
   isAuthenticated: boolean;
   authenticate: (token: string) => void;
   deauthenticate: () => void;

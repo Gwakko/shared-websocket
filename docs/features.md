@@ -867,11 +867,11 @@ ws.onAuthChange((authenticated) => {
 **React**
 
 ```tsx
-import { useAuth, useSocketLifecycle } from '@gwakko/shared-websocket/react';
+import { useSocketAuth, useSocketLifecycle } from '@gwakko/shared-websocket/react';
 
 // Login page
 function LoginPage() {
-  const { authenticate } = useAuth();
+  const { authenticate } = useSocketAuth();
 
   const handleLogin = async (email: string, password: string) => {
     const { token } = await api.login(email, password);
@@ -883,7 +883,7 @@ function LoginPage() {
 
 // Header with auth-aware UI
 function Header() {
-  const { isAuthenticated, deauthenticate } = useAuth();
+  const { isAuthenticated, deauthenticate } = useSocketAuth();
 
   return (
     <nav>
@@ -897,7 +897,7 @@ function Header() {
 
 // Conditional rendering — private components unmount on deauth
 function App() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated } = useSocketAuth();
 
   return (
     <>
@@ -921,9 +921,9 @@ useSocketLifecycle({
 
 ```vue
 <script setup lang="ts">
-import { useAuth, useSocketLifecycle } from '@gwakko/shared-websocket/vue';
+import { useSocketAuth, useSocketLifecycle } from '@gwakko/shared-websocket/vue';
 
-const { isAuthenticated, authenticate, deauthenticate } = useAuth();
+const { isAuthenticated, authenticate, deauthenticate } = useSocketAuth();
 
 async function login(email: string, password: string) {
   const { token } = await api.login(email, password);
@@ -984,7 +984,7 @@ ws.deauthenticate();
 **React**
 
 ```tsx
-import { useAuth, useChannel, useTopics } from '@gwakko/shared-websocket/react';
+import { useSocketAuth, useChannel, useTopics } from '@gwakko/shared-websocket/react';
 
 function PrivateChat({ roomId }: { roomId: string }) {
   // Auth-aware channel — auto-leaves on deauth + unmount
@@ -998,7 +998,7 @@ function PrivateChat({ roomId }: { roomId: string }) {
 
 // Mount only when authenticated — clean lifecycle
 function App() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated } = useSocketAuth();
 
   return (
     <>
@@ -1013,9 +1013,9 @@ function App() {
 
 ```vue
 <script setup lang="ts">
-import { useAuth, useChannel, useTopics } from '@gwakko/shared-websocket/vue';
+import { useSocketAuth, useChannel, useTopics } from '@gwakko/shared-websocket/vue';
 
-const { isAuthenticated } = useAuth();
+const { isAuthenticated } = useSocketAuth();
 
 // Auth-aware channel
 const chat = useChannel('chat:private_room', { auth: true });

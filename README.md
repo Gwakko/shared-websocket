@@ -91,7 +91,7 @@ await withSocket('wss://api.example.com/ws', {
 import {
   SharedWebSocketProvider,
   useSharedWebSocket,
-  useAuth,
+  useSocketAuth,
   useSocketEvent,
   useSocketStream,
   useSocketSync,
@@ -116,7 +116,7 @@ function App() {
 
 function Dashboard() {
   const ws = useSharedWebSocket();
-  const { isAuthenticated, authenticate, deauthenticate } = useAuth();
+  const { isAuthenticated, authenticate, deauthenticate } = useSocketAuth();
   const order = useSocketEvent<Order>('order.created');
   const [cart, setCart] = useSocketSync('cart', { items: [] });
   const { connected, tabRole } = useSocketStatus();
@@ -163,7 +163,7 @@ app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
 <script setup lang="ts">
 import {
   useSharedWebSocket,
-  useAuth,
+  useSocketAuth,
   useSocketEvent,
   useSocketSync,
   useSocketLifecycle,
@@ -173,7 +173,7 @@ import {
 } from '@gwakko/shared-websocket/vue';
 
 const ws = useSharedWebSocket();
-const { isAuthenticated, authenticate, deauthenticate } = useAuth();
+const { isAuthenticated, authenticate, deauthenticate } = useSocketAuth();
 const order = useSocketEvent<Order>('order.created');
 const cart = useSocketSync('cart', { items: [] });
 

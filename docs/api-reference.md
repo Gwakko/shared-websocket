@@ -129,7 +129,7 @@ All hooks use context internally — no need to pass `ws`. Every hook accepts an
 | `useSocketStream<T>(event, cb?)` | Returns `T[]` (accumulated) | `cb(data)` — manage your own state |
 | `useSocketSync<T>(key, init, cb?)` | Returns `[T, setter]` | `cb(value)` — side effects on sync |
 | `useSocketCallback<T>(event, cb)` | — | Fire-and-forget (no state) |
-| `useAuth()` | `{ isAuthenticated, authenticate, deauthenticate }` | — |
+| `useSocketAuth()` | `{ isAuthenticated, authenticate, deauthenticate }` | — |
 | `useSocketStatus()` | `{ connected, tabRole, isAuthenticated }` | — |
 | `useSocketLifecycle(handlers)` | — | onConnect, onDisconnect, onReconnecting, onLeaderChange, onError, onAuthChange |
 | `useChannel(name, opts?)` | `Channel` handle | Auto-join/leave, `{ auth: true }` for auth-aware |
@@ -172,5 +172,5 @@ All composables accept an **optional callback** — same pattern as React hooks.
 | `useSocketStream<T>(event, cb?)` | `Ref<T[]>` | `cb(data)` — manage your own ref |
 | `useSocketSync<T>(key, init, cb?)` | `Ref<T>` (two-way) | `cb(value)` — side effects on sync |
 | `useSocketCallback<T>(event, cb)` | — | Fire-and-forget |
-| `useAuth()` | `{ isAuthenticated, authenticate, deauthenticate }` | — |
+| `useSocketAuth()` | `{ isAuthenticated, authenticate, deauthenticate }` | — |
 | `useSocketStatus()` | `{ connected, tabRole, isAuthenticated }` | — |

@@ -345,7 +345,7 @@ console.log(ws.isAuthenticated); // true / false
 ```tsx
 import {
   SharedWebSocketProvider,
-  useAuth,
+  useSocketAuth,
   useSocketEvent,
   useSocketLifecycle,
   useChannel,
@@ -368,7 +368,7 @@ function App() {
 // ── Layout — auth-aware routing ───────────────────────────
 
 function Layout() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated } = useSocketAuth();
 
   // Redirect on deauth / server revocation
   useSocketLifecycle({
@@ -392,7 +392,7 @@ function Layout() {
 // ── Header — login/logout UI ──────────────────────────────
 
 function Header() {
-  const { isAuthenticated, authenticate, deauthenticate } = useAuth();
+  const { isAuthenticated, authenticate, deauthenticate } = useSocketAuth();
 
   const handleLogin = async () => {
     const { token } = await api.login('user@test.com', 'password');
@@ -458,13 +458,13 @@ app.mount('#app');
 <!-- Layout.vue — auth-aware routing -->
 <script setup lang="ts">
 import {
-  useAuth,
+  useSocketAuth,
   useSocketLifecycle,
 } from '@gwakko/shared-websocket/vue';
 import { useRouter } from 'vue-router';
 
 const router = useRouter();
-const { isAuthenticated, authenticate, deauthenticate } = useAuth();
+const { isAuthenticated, authenticate, deauthenticate } = useSocketAuth();
 
 async function login() {
   const { token } = await api.login('user@test.com', 'password');

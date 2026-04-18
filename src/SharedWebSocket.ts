@@ -268,8 +268,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * ws.authenticate(token);
    *
    * @example
-   * // React — via useAuth hook
-   * const { authenticate } = useAuth();
+   * // React — via useSocketAuth hook
+   * const { authenticate } = useSocketAuth();
    * authenticate(token);
    */
   authenticate(token: string): void {

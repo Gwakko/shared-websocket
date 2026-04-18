@@ -61,7 +61,7 @@ export function useSharedWebSocket(): SharedWebSocket {
  * Syncs across all tabs.
  *
  * @example
- * const { isAuthenticated, authenticate, deauthenticate } = useAuth();
+ * const { isAuthenticated, authenticate, deauthenticate } = useSocketAuth();
  *
  * async function login(email: string, password: string) {
  *   const { token } = await api.login(email, password);
@@ -71,7 +71,7 @@ export function useSharedWebSocket(): SharedWebSocket {
  * @example
  * // In template: <button v-if="isAuthenticated" @click="deauthenticate">Logout</button>
  */
-export function useAuth(): {
+export function useSocketAuth(): {
   isAuthenticated: Ref<boolean>;
   authenticate: (token: string) => void;
   deauthenticate: () => void;

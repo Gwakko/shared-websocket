@@ -1,6 +1,6 @@
 {
   "name": "@gwakko/shared-websocket",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "Share ONE WebSocket connection across browser tabs — leader election, BroadcastChannel sync, optional Web Worker",
   "type": "module",
   "main": "./dist/index.cjs",

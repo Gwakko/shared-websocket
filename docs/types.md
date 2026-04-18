@@ -46,7 +46,7 @@ import type {
 import {
   SharedWebSocketProvider,
   useSharedWebSocket,
-  useAuth,
+  useSocketAuth,
   useSocketEvent,
   useSocketStream,
   useSocketSync,
@@ -66,7 +66,7 @@ import {
 import {
   createSharedWebSocketPlugin,
   useSharedWebSocket,
-  useAuth,
+  useSocketAuth,
   useSocketEvent,
   useSocketStream,
   useSocketSync,
