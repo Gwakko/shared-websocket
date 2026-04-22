@@ -25,9 +25,12 @@ Complete reference for all methods, options, hooks, and composables.
 | `stream(event, signal?)` | AsyncGenerator for consuming events |
 | `send(event, data)` | Send to server (routed through leader) |
 | `request(event, data, timeout?)` | Request/response via server |
-| `sync(key, value)` | Sync state across tabs |
+| `sync(key, value)` | Sync state across tabs (no server) |
 | `getSync(key)` | Get synced value |
 | `onSync(key, fn)` | Listen for sync changes |
+| `authenticate(token)` | Runtime auth on existing connection |
+| `deauthenticate()` | Logout, auto-leave auth channels/topics |
+| `onAuthChange(fn)` | Listen for auth state changes |
 | `disconnect()` | Close connection and cleanup |
 | `[Symbol.dispose]()` | Cleanup (also called by `disconnect`) |
 

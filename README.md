@@ -203,6 +203,7 @@ usePush('notification', {
 | **Channels** | `ws.channel('room')` — scoped events, auto join/leave |
 | **Topics** | `ws.subscribe('topic')` — server-side filtered subscriptions |
 | **Tab Sync** | `ws.sync(key, value)` — state across tabs, no server |
+| **Standalone Tab Sync** | `TabSync` — cross-tab state without WebSocket (`/sync` import) |
 | **Push Notifications** | `ws.push()` — render (sonner) + browser Notification API |
 | **Middleware** | `ws.use('incoming'/'outgoing', fn)` — transform, filter, log |
 | **Worker Mode** | `useWorker: true` — WebSocket off main thread |
@@ -259,6 +260,7 @@ Incoming: WebSocket.onmessage
 | **[API Reference](docs/api-reference.md)** | Methods, options, React hooks, Vue composables |
 | **[Features](docs/features.md)** | Typed events, channels, topics, push, sync, lifecycle, Zod |
 | **[Configuration](docs/configuration.md)** | Serialization, middleware, event protocol, debug, Worker |
+| **[Tab Sync](docs/tab-sync.md)** | Standalone cross-tab state — no WebSocket needed |
 | **[Server Guide](docs/server-guide.md)** | Node.js, Go, PHP examples + system events |
 | **[Types](docs/types.md)** | All exported types with import examples |
 

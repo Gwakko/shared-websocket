@@ -2,6 +2,9 @@
 export { SharedWebSocket } from './SharedWebSocket';
 export { withSocket } from './withSocket';
 
+// Tab Sync (standalone — no WebSocket needed)
+export { TabSync } from './TabSync';
+
 // Internal components (for advanced usage)
 export { MessageBus } from './MessageBus';
 export { TabCoordinator } from './TabCoordinator';

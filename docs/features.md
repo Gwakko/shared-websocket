@@ -485,21 +485,75 @@ ws.push('order.created', {
 
 ## Tab Sync
 
-Sync state across tabs via BroadcastChannel with no server roundtrip. See [Getting Started](./getting-started.md) for `withSocket()` examples with tab sync.
+Sync state across tabs via BroadcastChannel — no server roundtrip.
+
+> **Need sync without WebSocket?** Use the standalone [TabSync](./tab-sync.md) — same BroadcastChannel API, zero WebSocket code: `import { TabSync } from '@gwakko/shared-websocket/sync'`
+
+**Vanilla TypeScript**
 
 ```typescript
-// Send state to ALL tabs instantly
-ws.sync('cart', { items: [1, 2, 3] });
-ws.sync('theme', 'dark');
-ws.sync('locale', 'en');
+await withSocket(url, async ({ ws }) => {
+  // Set — broadcasts to ALL tabs instantly
+  ws.sync('cart', { items: [1, 2, 3] });
+  ws.sync('theme', 'dark');
+  ws.sync('locale', 'en');
 
-// Read synced state from other tabs
-const cart = ws.getSync<Cart>('cart');  // { items: [1, 2, 3] }
+  // Get
+  const cart = ws.getSync<Cart>('cart');  // { items: [1, 2, 3] }
 
-// React to changes from other tabs
-ws.onSync('cart', (cart) => {
-  updateCartBadge(cart.items.length);
+  // Listen for changes from other tabs
+  ws.onSync('cart', (cart) => {
+    updateCartBadge(cart.items.length);
+  });
+
+  ws.onSync('theme', (theme) => {
+    document.documentElement.setAttribute('data-theme', theme);
+  });
 });
+```
+
+**React**
+
+```tsx
+import { useSocketSync } from '@gwakko/shared-websocket/react';
+
+// Two-way synced state — like useState but shared across tabs
+const [cart, setCart] = useSocketSync('cart', { items: [] });
+const [theme, setTheme] = useSocketSync('theme', 'light');
+
+// With side effect callback
+const [locale, setLocale] = useSocketSync('locale', 'en', (locale) => {
+  i18n.changeLanguage(locale);
+});
+
+// Update from any tab → all tabs re-render
+<button onClick={() => setTheme('dark')}>Dark mode</button>
+<button onClick={() => setCart({ items: [...cart.items, newItem] })}>Add to cart</button>
+```
+
+**Vue**
+
+```vue
+<script setup lang="ts">
+import { useSocketSync } from '@gwakko/shared-websocket/vue';
+
+// Reactive ref — mutating syncs to all tabs
+const cart = useSocketSync('cart', { items: [] });
+const theme = useSocketSync('theme', 'light');
+
+// With side effect callback
+const locale = useSocketSync('locale', 'en', (locale) => {
+  i18n.changeLanguage(locale);
+});
+</script>
+
+<template>
+  <select v-model="theme">
+    <option value="light">Light</option>
+    <option value="dark">Dark</option>
+  </select>
+  <button @click="cart = { items: [...cart.items, newItem] }">Add to cart</button>
+</template>
 ```
 
 ## Lifecycle Hooks

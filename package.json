@@ -21,6 +21,21 @@
       "types": "./dist/vue.d.ts",
       "import": "./dist/vue.js",
       "require": "./dist/vue.cjs"
+    },
+    "./sync": {
+      "types": "./dist/sync.d.ts",
+      "import": "./dist/sync.js",
+      "require": "./dist/sync.cjs"
+    },
+    "./sync/react": {
+      "types": "./dist/sync-react.d.ts",
+      "import": "./dist/sync-react.js",
+      "require": "./dist/sync-react.cjs"
+    },
+    "./sync/vue": {
+      "types": "./dist/sync-vue.d.ts",
+      "import": "./dist/sync-vue.js",
+      "require": "./dist/sync-vue.cjs"
     }
   },
   "files": [
@@ -41,6 +56,8 @@
     "broadcast-channel",
     "shared",
     "tabs",
+    "tab-sync",
+    "cross-tab",
     "leader-election",
     "real-time",
     "react",
@@ -52,7 +69,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Gwakko/shared-websocket.git"
+    "url": "git+https://github.com/Gwakko/shared-websocket.git"
   },
   "homepage": "https://github.com/Gwakko/shared-websocket#readme",
   "peerDependencies": {

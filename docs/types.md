@@ -80,6 +80,32 @@ import {
 } from '@gwakko/shared-websocket/vue';
 ```
 
+## Sync Imports (standalone, no WebSocket)
+
+```typescript
+// Core
+import { TabSync } from '@gwakko/shared-websocket/sync';
+
+// React
+import {
+  TabSyncProvider,
+  useTabSync,
+  useTabSyncValue,
+  useTabSyncCallback,
+  useTabSyncContext,
+} from '@gwakko/shared-websocket/sync/react';
+
+// Vue
+import {
+  createTabSyncPlugin,
+  useTabSync,
+  useTabSyncValue,
+  useTabSyncCallback,
+  useTabSyncContext,
+  TabSyncKey,
+} from '@gwakko/shared-websocket/sync/vue';
+```
+
 ## Usage with Custom Types
 
 ```typescript
