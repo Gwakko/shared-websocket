@@ -239,6 +239,7 @@ Incoming: WebSocket.onmessage
 | `protocols` | `string[]` | `[]` | WebSocket subprotocols |
 | `reconnect` | `boolean` | `true` | Auto-reconnect |
 | `reconnectMaxDelay` | `number` | `30000` | Max backoff (ms) |
+| `reconnectMaxRetries` | `number` | `Infinity` | Max attempts before giving up |
 | `heartbeatInterval` | `number` | `30000` | Ping interval (ms) |
 | `sendBuffer` | `number` | `100` | Buffered messages during reconnect |
 | `auth` | `() => string` | — | Token callback (each connect) |

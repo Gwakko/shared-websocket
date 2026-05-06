@@ -50,6 +50,7 @@ Callback receives `{ ws, signal }` — destructure what you need. Signal aborts 
 | `protocols` | `string[]` | `[]` | WebSocket subprotocols |
 | `reconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
 | `reconnectMaxDelay` | `number` | `30000` | Max reconnect backoff (ms) |
+| `reconnectMaxRetries` | `number` | `Infinity` | Max attempts before giving up |
 | `heartbeatInterval` | `number` | `30000` | Ping interval (ms) |
 | `sendBuffer` | `number` | `100` | Max buffered messages during reconnect |
 | `auth` | `() => string` | — | Token provider callback (called on each connect) |

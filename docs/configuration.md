@@ -1,11 +1,12 @@
 # Configuration
 
-Serialization, protocols, middleware, debug mode, and worker configuration.
+Reconnection, serialization, protocols, middleware, debug mode, and worker configuration.
 
 [← Back to README](../README.md)
 
 ## Table of Contents
 
+- [Reconnection](#reconnection)
 - [Custom Serialization](#custom-serialization)
   - [Per-Event Serialization](#per-event-serialization)
   - [Global Serialization Examples](#global-serialization-examples)
@@ -15,6 +16,86 @@ Serialization, protocols, middleware, debug mode, and worker configuration.
 - [Middleware](#middleware)
 - [Debug Mode & Custom Logger](#debug-mode--custom-logger)
 - [Worker Mode](#worker-mode)
+
+## Reconnection
+
+Auto-reconnect uses **exponential backoff with ±25% jitter** to prevent thundering herd when many clients reconnect simultaneously.
+
+```
+Attempt  Base delay  With jitter (±25%)
+  1        1s         0.75s – 1.25s
+  2        2s         1.50s – 2.50s
+  3        4s         3.00s – 5.00s
+  4        8s         6.00s – 10.0s
+  5       16s        12.00s – 20.0s
+  6       30s (max)  22.50s – 30.0s  ← capped at reconnectMaxDelay
+  7       30s        22.50s – 30.0s
+  ...     ...        ...
+```
+
+**Default behavior** — retries forever with increasing delays:
+
+```typescript
+new SharedWebSocket('wss://api.example.com/ws');
+// reconnect: true (default)
+// reconnectMaxDelay: 30_000 (default, 30s max backoff)
+// reconnectMaxRetries: Infinity (default, never gives up)
+```
+
+**Limit retries** — give up after N attempts:
+
+```typescript
+new SharedWebSocket('wss://api.example.com/ws', {
+  reconnectMaxRetries: 5,     // give up after 5 failed attempts
+  reconnectMaxDelay: 10_000,  // cap backoff at 10s
+});
+
+// Sequence: ~1s → ~2s → ~4s → ~8s → ~10s → closed
+// After 5 failures: state → 'closed', onDisconnect fires
+```
+
+**React — show UI on max retries:**
+
+```tsx
+useSocketLifecycle({
+  onDisconnect: () => {
+    // Fires when connection closes (including max retries reached)
+    showBanner('Connection lost. Please refresh the page.');
+  },
+  onReconnecting: () => {
+    showBanner('Reconnecting...');
+  },
+  onConnect: () => {
+    hideBanner();
+  },
+});
+```
+
+**Vue — show UI on max retries:**
+
+```vue
+<script setup>
+useSocketLifecycle({
+  onDisconnect: () => showBanner('Connection lost'),
+  onReconnecting: () => showBanner('Reconnecting...'),
+  onConnect: () => hideBanner(),
+});
+</script>
+```
+
+**Disable auto-reconnect entirely:**
+
+```typescript
+new SharedWebSocket('wss://api.example.com/ws', {
+  reconnect: false,  // no auto-reconnect, closes immediately
+});
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `reconnect` | `boolean` | `true` | Enable auto-reconnect |
+| `reconnectMaxDelay` | `number` | `30000` | Max backoff in ms (caps exponential growth) |
+| `reconnectMaxRetries` | `number` | `Infinity` | Max attempts before giving up |
 
 ## Custom Serialization
 
