@@ -21,10 +21,10 @@ export const TabSyncKey: InjectionKey<TabSync> = Symbol('TabSync');
  * const app = createApp(App);
  * app.use(createTabSyncPlugin('my-app'));
  */
-export function createTabSyncPlugin(channel?: string) {
+export function createTabSyncPlugin(channel?: string, options?: { debug?: boolean }) {
   return {
     install(app: App) {
-      const sync = new TabSync(channel);
+      const sync = new TabSync(channel, options);
       app.provide(TabSyncKey, sync);
 
       const originalUnmount = app.unmount.bind(app);

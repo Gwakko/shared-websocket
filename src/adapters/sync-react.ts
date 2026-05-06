@@ -28,11 +28,13 @@ const TabSyncContext = createContext<TabSync | null>(null);
 export interface TabSyncProviderProps {
   /** BroadcastChannel name (default: "tab-sync"). */
   channel?: string;
+  /** Enable debug logging. */
+  debug?: boolean;
   children: ReactNode;
 }
 
-export function TabSyncProvider({ channel, children }: TabSyncProviderProps) {
-  const [sync] = useState(() => new TabSync(channel));
+export function TabSyncProvider({ channel, debug, children }: TabSyncProviderProps) {
+  const [sync] = useState(() => new TabSync(channel, { debug }));
 
   useEffect(() => {
     return () => sync[Symbol.dispose]();

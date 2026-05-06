@@ -1,2 +1,2 @@
 export { TabSync } from './TabSync';
-export type { Unsubscribe } from './types';
+export type { Unsubscribe, Logger } from './types';

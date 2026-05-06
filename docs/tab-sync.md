@@ -60,6 +60,8 @@ import { createTabSyncPlugin, useTabSync } from '@gwakko/shared-websocket/sync/v
 import { TabSync } from '@gwakko/shared-websocket/sync';
 
 const sync = new TabSync('my-app');
+// Or with debug logging: new TabSync('my-app', { debug: true })
+// Logs show [TabSync] prefix: → set, ← remote set, → delete, etc.
 
 // ── Set & read ────────────────────────────────────────
 
@@ -115,7 +117,7 @@ import {
 
 function App() {
   return (
-    <TabSyncProvider channel="my-app">
+    <TabSyncProvider channel="my-app" debug>
       <ThemeSwitcher />
       <CartBadge />
       <DraftEditor />
@@ -197,7 +199,7 @@ import { createTabSyncPlugin } from '@gwakko/shared-websocket/sync/vue';
 import App from './App.vue';
 
 const app = createApp(App);
-app.use(createTabSyncPlugin('my-app'));
+app.use(createTabSyncPlugin('my-app', { debug: true }));
 app.mount('#app');
 ```
 
@@ -290,7 +292,7 @@ const theme = useTabSyncValue<string>('theme');
 
 | Method | Description |
 |--------|-------------|
-| `new TabSync(channel?)` | Create instance. Default channel: `"tab-sync"` |
+| `new TabSync(channel?, options?)` | Create instance. Default channel: `"tab-sync"`. Options: `{ debug?, logger? }` |
 | `set(key, value)` | Set value, broadcast to all tabs, notify local listeners |
 | `get<T>(key)` | Get current value from local store |
 | `delete(key)` | Delete key, broadcast deletion |

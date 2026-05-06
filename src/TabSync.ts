@@ -1,11 +1,20 @@
 import './utils/disposable';
-import type { Unsubscribe } from './types';
+import type { Unsubscribe, Logger } from './types';
 
 interface SyncMessage {
   key: string;
   value: unknown;
   deleted?: boolean;
 }
+
+interface TabSyncOptions {
+  /** Enable debug logging (default: false). */
+  debug?: boolean;
+  /** Custom logger (default: console). */
+  logger?: Logger;
+}
+
+const NOOP_LOGGER: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
 /**
  * Cross-tab state synchronization via BroadcastChannel.
@@ -15,21 +24,30 @@ interface SyncMessage {
  * const sync = new TabSync('my-app');
  * sync.set('theme', 'dark');
  * sync.on('theme', (theme) => applyTheme(theme));
+ *
+ * @example
+ * // With debug logging
+ * const sync = new TabSync('my-app', { debug: true });
  */
 export class TabSync implements Disposable {
   private store = new Map<string, unknown>();
   private listeners = new Map<string, Set<(value: unknown) => void>>();
   private bc: BroadcastChannel;
   private disposed = false;
+  private readonly log: Logger;
 
-  constructor(channel = 'tab-sync') {
+  constructor(channel = 'tab-sync', options?: TabSyncOptions) {
+    this.log = options?.debug ? (options.logger ?? console) : NOOP_LOGGER;
+    this.log.debug('[TabSync] init', { channel });
     this.bc = new BroadcastChannel(channel);
     this.bc.onmessage = (ev: MessageEvent<SyncMessage>) => {
       const { key, value, deleted } = ev.data;
       if (deleted) {
         this.store.delete(key);
+        this.log.debug('[TabSync] ← remote delete', key);
       } else {
         this.store.set(key, value);
+        this.log.debug('[TabSync] ← remote set', key, value);
       }
       this.emit(key, value);
     };
@@ -39,6 +57,7 @@ export class TabSync implements Disposable {
   set<T>(key: string, value: T): void {
     this.store.set(key, value);
     this.bc.postMessage({ key, value } satisfies SyncMessage);
+    this.log.debug('[TabSync] → set', key, value);
     this.emit(key, value);
   }
 
@@ -51,6 +70,7 @@ export class TabSync implements Disposable {
   delete(key: string): void {
     this.store.delete(key);
     this.bc.postMessage({ key, value: undefined, deleted: true } satisfies SyncMessage);
+    this.log.debug('[TabSync] → delete', key);
     this.emit(key, undefined);
   }
 
@@ -98,6 +118,7 @@ export class TabSync implements Disposable {
   /** Clear all keys and notify listeners. */
   clear(): void {
     const keys = [...this.store.keys()];
+    this.log.debug('[TabSync] → clear', keys);
     this.store.clear();
     for (const key of keys) {
       this.bc.postMessage({ key, value: undefined, deleted: true } satisfies SyncMessage);
