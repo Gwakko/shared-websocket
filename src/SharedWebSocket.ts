@@ -664,6 +664,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       protocols: this.options.protocols,
       reconnect: this.options.reconnect,
       reconnectMaxDelay: this.options.reconnectMaxDelay,
+      reconnectMaxRetries: this.options.reconnectMaxRetries,
       heartbeatInterval: this.options.heartbeatInterval,
       sendBuffer: this.options.sendBuffer,
       pingPayload: this.proto.ping,

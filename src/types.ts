@@ -52,6 +52,8 @@ export interface SharedWebSocketOptions<TEvents extends EventMap = EventMap> {
   protocols?: string[];
   reconnect?: boolean;
   reconnectMaxDelay?: number;
+  /** Max reconnect attempts before giving up (default: Infinity — retry forever). */
+  reconnectMaxRetries?: number;
   heartbeatInterval?: number;
   electionTimeout?: number;
   leaderHeartbeat?: number;

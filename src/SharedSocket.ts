@@ -6,6 +6,8 @@ interface SharedSocketOptions {
   protocols?: string[];
   reconnect?: boolean;
   reconnectMaxDelay?: number;
+  /** Max reconnect attempts before giving up (default: Infinity). */
+  reconnectMaxRetries?: number;
   heartbeatInterval?: number;
   sendBuffer?: number;
   auth?: () => string | Promise<string>;
@@ -30,6 +32,8 @@ export class SharedSocket implements Disposable {
   private onMessageFns = new Set<EventHandler>();
   private onStateChangeFns = new Set<(state: SocketState) => void>();
 
+  private reconnectAttempts = 0;
+
   private readonly opts: Required<Omit<SharedSocketOptions, 'auth' | 'authToken' | 'authParam' | 'pingPayload' | 'serialize' | 'deserialize'>> & {
     auth?: () => string | Promise<string>;
     authToken?: string;
@@ -47,6 +51,7 @@ export class SharedSocket implements Disposable {
       protocols: options.protocols ?? [],
       reconnect: options.reconnect ?? true,
       reconnectMaxDelay: options.reconnectMaxDelay ?? 30_000,
+      reconnectMaxRetries: options.reconnectMaxRetries ?? Infinity,
       heartbeatInterval: options.heartbeatInterval ?? 30_000,
       sendBuffer: options.sendBuffer ?? 100,
       auth: options.auth,
@@ -75,6 +80,7 @@ export class SharedSocket implements Disposable {
     this.ws = new WebSocket(connectUrl, this.opts.protocols);
 
     this.ws.onopen = () => {
+      this.reconnectAttempts = 0;
       this.setState('connected');
       this.flushBuffer();
       this.startHeartbeat();
@@ -143,6 +149,13 @@ export class SharedSocket implements Disposable {
   }
 
   private reconnect(): void {
+    this.reconnectAttempts++;
+
+    if (this.reconnectAttempts > this.opts.reconnectMaxRetries) {
+      this.setState('closed');
+      return;
+    }
+
     this.setState('reconnecting');
     const gen = backoff(1000, this.opts.reconnectMaxDelay);
 
