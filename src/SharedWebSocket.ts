@@ -751,7 +751,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       }),
     );
 
-    this.socket.connect();
+    void this.socket.connect();
   }
 
   private reAuthenticateOnReconnect(): void {

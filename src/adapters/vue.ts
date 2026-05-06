@@ -29,7 +29,7 @@ export function createSharedWebSocketPlugin(url: string, options?: SharedWebSock
   return {
     install(app: App) {
       const socket = new SharedWebSocket(url, options);
-      socket.connect();
+      void socket.connect();
       app.provide(SharedWebSocketKey, socket);
 
       const originalUnmount = app.unmount.bind(app);
