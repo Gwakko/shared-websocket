@@ -48,13 +48,10 @@ export interface SharedWebSocketProviderProps {
  * }
  */
 export function SharedWebSocketProvider({ url, options, children }: SharedWebSocketProviderProps) {
-  const [socket] = useState(() => {
-    const ws = new SharedWebSocket(url, options);
-    ws.connect();
-    return ws;
-  });
+  const [socket] = useState(() => new SharedWebSocket(url, options));
 
   useEffect(() => {
+    socket.connect();
     return () => {
       socket[Symbol.dispose]();
     };

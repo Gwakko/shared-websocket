@@ -31,7 +31,7 @@ const NOOP_LOGGER: Logger = {
 /** Common interface for both SharedSocket and WorkerSocket. */
 interface SocketAdapter {
   readonly state: string;
-  connect(): void;
+  connect(): void | Promise<void>;
   send(data: unknown): void;
   disconnect(): void;
   onMessage(fn: EventHandler): Unsubscribe;
@@ -675,6 +675,9 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       return new WorkerSocket(this.url, {
         ...socketOptions,
         workerUrl: this.options.workerUrl,
+        auth: this.options.auth,
+        authToken: this.options.authToken,
+        authParam: this.options.authParam,
       });
     }
 
