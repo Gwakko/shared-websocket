@@ -149,13 +149,13 @@ export function useSocketAuth(): {
  *   setOrders(prev => [order, ...prev].slice(0, 50)); // keep last 50
  * });
  */
-export function useSocketEvent<T>(event: string, callback?: (data: T) => void): T | undefined {
+export function useSocketEvent<T>(event: string, callback?: (data: T, raw?: unknown) => void): T | undefined {
   const socket = useSharedWebSocket();
   const [value, setValue] = useState<T | undefined>(undefined);
 
-  const onEvent = useEffectEvent((data: T) => {
+  const onEvent = useEffectEvent((data: T, raw?: unknown) => {
     if (callback) {
-      callback(data);
+      callback(data, raw);
     } else {
       setValue(data);
     }
@@ -192,13 +192,13 @@ export function useSocketEvent<T>(event: string, callback?: (data: T) => void): 
  *   if (entry.level === 'error') setErrors(prev => [...prev, entry]);
  * });
  */
-export function useSocketStream<T>(event: string, callback?: (data: T) => void): T[] {
+export function useSocketStream<T>(event: string, callback?: (data: T, raw?: unknown) => void): T[] {
   const socket = useSharedWebSocket();
   const [items, setItems] = useState<T[]>([]);
 
-  const onEvent = useEffectEvent((data: T) => {
+  const onEvent = useEffectEvent((data: T, raw?: unknown) => {
     if (callback) {
-      callback(data);
+      callback(data, raw);
     } else {
       setItems((prev) => [...prev, data]);
     }
@@ -276,11 +276,11 @@ export function useSocketSync<T>(
  *   }
  * });
  */
-export function useSocketCallback<T>(event: string, callback: (data: T) => void): void {
+export function useSocketCallback<T>(event: string, callback: (data: T, raw?: unknown) => void): void {
   const socket = useSharedWebSocket();
 
-  const handler = useEffectEvent((data: T) => {
-    callback(data);
+  const handler = useEffectEvent((data: T, raw?: unknown) => {
+    callback(data, raw);
   });
 
   useEffect(() => {

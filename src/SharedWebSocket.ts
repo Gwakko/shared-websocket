@@ -90,8 +90,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     // When ANY tab receives a WS message via bus → emit to local subscribers
     this.cleanups.push(
-      this.bus.subscribe<{ event: string; data: unknown }>('ws:message', (msg) => {
-        this.subs.emit(msg.event, msg.data);
+      this.bus.subscribe<{ event: string; data: unknown; raw?: unknown }>('ws:message', (msg) => {
+        this.subs.emit(msg.event, msg.data, msg.raw);
       }),
     );
 
@@ -429,18 +429,31 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
   // ─── Event Subscription ──────────────────────────────
 
-  /** Subscribe to server events (works in ALL tabs). Type-safe with EventMap. */
+  /**
+   * Subscribe to server events (works in ALL tabs). Type-safe with EventMap.
+   *
+   * The handler receives `(data, raw)`:
+   * - `data` is extracted via `dataField` (default `'data'`)
+   * - `raw` is the full deserialized envelope, useful for protocols with extra
+   *   top-level fields like `id`, `kind`, `channel`, `type`, etc.
+   *
+   * @example
+   * ws.on('msg', (data, raw) => {
+   *   raw.id;    // top-level metadata
+   *   raw.kind;  // discriminator
+   * });
+   */
   on<K extends string & keyof TEvents>(event: K, handler: EventHandler<TEvents[K]>): Unsubscribe;
   on(event: string, handler: EventHandler<unknown>): Unsubscribe;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  on(event: string, handler: (data: any) => void): Unsubscribe {
+  on(event: string, handler: (data: any, raw?: unknown) => void): Unsubscribe {
     return this.subs.on(event, handler);
   }
 
   once<K extends string & keyof TEvents>(event: K, handler: EventHandler<TEvents[K]>): Unsubscribe;
   once(event: string, handler: EventHandler<unknown>): Unsubscribe;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  once(event: string, handler: (data: any) => void): Unsubscribe {
+  once(event: string, handler: (data: any, raw?: unknown) => void): Unsubscribe {
     return this.subs.once(event, handler);
   }
 
@@ -809,7 +822,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       }
 
       this.log.debug('[SharedWS] ← recv', event, payload);
-      this.bus.broadcast('ws:message', { event, data: payload });
+      this.bus.broadcast('ws:message', { event, data: payload, raw: data });
     });
 
     this.socket.onStateChange((state: string) => {

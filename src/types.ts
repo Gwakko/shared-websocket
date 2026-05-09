@@ -1,7 +1,12 @@
 export type SocketState = 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'failed';
 export type TabRole = 'leader' | 'follower';
 export type Unsubscribe = () => void;
-export type EventHandler<T = unknown> = (data: T) => void;
+/**
+ * Event handler. Receives the extracted `data` (per `dataField`) plus the
+ * full raw envelope as a second argument. Use `raw` to access top-level
+ * fields outside `dataField` (e.g. `id`, `kind`, `channel`, `type`).
+ */
+export type EventHandler<T = unknown> = (data: T, raw?: unknown) => void;
 
 /** Type-safe event map. Keys are event names, values are payload types. */
 export type EventMap = Record<string, unknown>;

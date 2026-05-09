@@ -16,9 +16,9 @@ export class SubscriptionManager implements Disposable {
   }
 
   once(event: string, handler: EventHandler): Unsubscribe {
-    const wrapper: EventHandler = (data) => {
+    const wrapper: EventHandler = (data, raw) => {
       unsub();
-      handler(data);
+      handler(data, raw);
     };
     const unsub = this.on(event, wrapper);
     return unsub;
@@ -32,11 +32,11 @@ export class SubscriptionManager implements Disposable {
     }
   }
 
-  emit(event: string, data: unknown): void {
+  emit(event: string, data: unknown, raw?: unknown): void {
     this.lastMessages.set(event, data);
     const set = this.handlers.get(event);
     if (set) {
-      for (const fn of set) fn(data);
+      for (const fn of set) fn(data, raw);
     }
   }
 

@@ -110,14 +110,14 @@ export function useSocketAuth(): {
  *   analytics.track('order_received', order);
  * });
  */
-export function useSocketEvent<T>(event: string, callback?: (data: T) => void): Ref<T | undefined> {
+export function useSocketEvent<T>(event: string, callback?: (data: T, raw?: unknown) => void): Ref<T | undefined> {
   const socket = useSharedWebSocket();
   const value = ref<T | undefined>(undefined) as Ref<T | undefined>;
 
-  const handler = (data: unknown) => {
+  const handler = (data: unknown, raw?: unknown) => {
     const typed = data as T;
     if (callback) {
-      callback(typed);
+      callback(typed, raw);
     } else {
       value.value = typed;
     }
@@ -151,14 +151,14 @@ export function useSocketEvent<T>(event: string, callback?: (data: T) => void): 
  *   if (entry.level === 'error') errors.value = [...errors.value, entry];
  * });
  */
-export function useSocketStream<T>(event: string, callback?: (data: T) => void): Ref<T[]> {
+export function useSocketStream<T>(event: string, callback?: (data: T, raw?: unknown) => void): Ref<T[]> {
   const socket = useSharedWebSocket();
   const items = ref<T[]>([]) as Ref<T[]>;
 
-  const handler = (data: unknown) => {
+  const handler = (data: unknown, raw?: unknown) => {
     const typed = data as T;
     if (callback) {
-      callback(typed);
+      callback(typed, raw);
     } else {
       items.value = [...items.value, typed];
     }
@@ -215,11 +215,11 @@ export function useSocketSync<T>(key: string, initialValue: T, callback?: (value
  *   showToast(n.title);
  * });
  */
-export function useSocketCallback<T>(event: string, callback: (data: T) => void): void {
+export function useSocketCallback<T>(event: string, callback: (data: T, raw?: unknown) => void): void {
   const socket = useSharedWebSocket();
 
-  const unsub = socket.on(event, (data: unknown) => {
-    callback(data as T);
+  const unsub = socket.on(event, (data: unknown, raw?: unknown) => {
+    callback(data as T, raw);
   });
 
   onUnmounted(unsub);
