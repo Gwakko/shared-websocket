@@ -97,9 +97,13 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     // Leader listens for send requests from followers
     this.cleanups.push(
-      this.bus.subscribe<{ event: string; data: unknown }>('ws:send', (msg) => {
+      this.bus.subscribe<{ event: string; data: unknown; extras?: Record<string, unknown> }>('ws:send', (msg) => {
         if (this.coordinator.isLeader && this.socket) {
-          this.socket.send({ [this.proto.eventField]: msg.event, [this.proto.dataField]: msg.data });
+          this.socket.send({
+            ...(msg.extras ?? {}),
+            [this.proto.eventField]: msg.event,
+            [this.proto.dataField]: msg.data,
+          });
         }
       }),
     );
@@ -451,15 +455,57 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     return this.subs.stream(event, signal);
   }
 
-  /** Send message to server (auto-routed through leader). Type-safe with EventMap. */
-  send<K extends string & keyof TEvents>(event: K, data: TEvents[K]): void;
-  send(event: string, data: unknown): void;
-  send(event: string, data: unknown): void {
+  /**
+   * Send message to server (auto-routed through leader). Type-safe with EventMap.
+   *
+   * The optional third argument `extras` adds top-level fields to the wire envelope.
+   * Use it for protocols that need extra envelope keys like `type`, `channel`, etc.
+   *
+   * @example
+   * // Default shape: { event, data }
+   * ws.send('chat.message', { text: 'Hello' });
+   * // → { event: 'chat.message', data: { text: 'Hello' } }
+   *
+   * @example
+   * // Pusher/Reverb-style envelope
+   * ws.send('group.member_ready',
+   *   { member_id: 'abc', ready: true },
+   *   { type: 'event', channel: 'public.group.xxx' },
+   * );
+   * // → {
+   * //     type: 'event',
+   * //     channel: 'public.group.xxx',
+   * //     event: 'group.member_ready',
+   * //     data: { member_id: 'abc', ready: true },
+   * //   }
+   */
+  send<K extends string & keyof TEvents>(event: K, data: TEvents[K], extras?: Record<string, unknown>): void;
+  send(event: string, data: unknown, extras?: Record<string, unknown>): void;
+  send(event: string, data: unknown, extras?: Record<string, unknown>): void {
+    if (extras) {
+      if (this.proto.eventField in extras) {
+        throw new Error(
+          `SharedWebSocket.send: extras cannot contain reserved key "${this.proto.eventField}" (eventField). ` +
+            `Pass the event name as the first argument instead.`,
+        );
+      }
+      if (this.proto.dataField in extras) {
+        throw new Error(
+          `SharedWebSocket.send: extras cannot contain reserved key "${this.proto.dataField}" (dataField). ` +
+            `Pass the payload as the second argument instead.`,
+        );
+      }
+    }
+
     // Per-event serializer transforms data before building payload
     const eventSerializer = this.serializers.get(event);
     const serializedData = eventSerializer ? eventSerializer(data) : data;
 
-    let payload: unknown = { [this.proto.eventField]: event, [this.proto.dataField]: serializedData };
+    let payload: unknown = {
+      ...(extras ?? {}),
+      [this.proto.eventField]: event,
+      [this.proto.dataField]: serializedData,
+    };
 
     for (const mw of this.outgoingMiddleware) {
       payload = mw(payload);
@@ -474,7 +520,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     if (this.coordinator.isLeader && this.socket) {
       this.socket.send(payload);
     } else {
-      this.bus.publish('ws:send', { event, data });
+      this.bus.publish('ws:send', { event, data, extras });
     }
   }
 
