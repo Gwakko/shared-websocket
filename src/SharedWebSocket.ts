@@ -28,6 +28,14 @@ const NOOP_LOGGER: Logger = {
   error() {},
 };
 
+/**
+ * Internal separator for channel-scoped subscription keys. ASCII RECORD
+ * SEPARATOR (U+001E) — chosen because it cannot collide with characters
+ * users put in channel or event names. Wire format keeps `:` for server
+ * compatibility; this is storage-only.
+ */
+const CHANNEL_KEY_SEP = '\u001e';
+
 /** Common interface for both SharedSocket and WorkerSocket. */
 interface SocketAdapter {
   readonly state: string;
@@ -72,6 +80,12 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private _isAuthenticated = false;
   private authChannels = new Map<string, Channel>();
   private authTopics = new Set<string>();
+  /**
+   * Refcount of active channel subscriptions per name. Used to route
+   * incoming events back to channel handlers via `${name}<RS>${event}`
+   * keys without colliding when names/events contain `:`.
+   */
+  private channelRefs = new Map<string, number>();
 
   constructor(
     private readonly url: string,
@@ -91,7 +105,20 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     // When ANY tab receives a WS message via bus → emit to local subscribers
     this.cleanups.push(
       this.bus.subscribe<{ event: string; data: unknown; raw?: unknown }>('ws:message', (msg) => {
+        // Bare emit — fires any handler registered with the literal event name
         this.subs.emit(msg.event, msg.data, msg.raw);
+
+        // Channel-scoped emit — for each registered channel whose name is a
+        // prefix of the incoming event (separated by ':'), also fire handlers
+        // stored under `${name}<RS>${rest}`. This lets `Channel.on('msg', h)`
+        // receive a wire event like 'chat:room:42:msg' without colon parsing.
+        for (const channelName of this.channelRefs.keys()) {
+          const prefix = channelName + ':';
+          if (msg.event.length > prefix.length && msg.event.startsWith(prefix)) {
+            const subEvent = msg.event.slice(prefix.length);
+            this.subs.emit(`${channelName}${CHANNEL_KEY_SEP}${subEvent}`, msg.data, msg.raw);
+          }
+        }
       }),
     );
 
@@ -575,33 +602,44 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     // Notify server about channel subscription
     this.send(this.proto.channelJoin, { channel: name });
 
+    // Track this channel for incoming-event prefix routing
+    this.channelRefs.set(name, (this.channelRefs.get(name) ?? 0) + 1);
+
     const self = this;
     const unsubs: Unsubscribe[] = [];
     const isAuth = options?.auth ?? false;
+    let left = false;
+    const key = (event: string) => `${name}${CHANNEL_KEY_SEP}${event}`;
 
     const ch: Channel = {
       name,
       on(event: string, handler: EventHandler): Unsubscribe {
-        const unsub = self.subs.on(`${name}:${event}`, handler);
+        const unsub = self.subs.on(key(event), handler);
         unsubs.push(unsub);
         return unsub;
       },
       once(event: string, handler: EventHandler): Unsubscribe {
-        const unsub = self.subs.once(`${name}:${event}`, handler);
+        const unsub = self.subs.once(key(event), handler);
         unsubs.push(unsub);
         return unsub;
       },
       send(event: string, data: unknown): void {
+        // Wire format keeps `:` for server compatibility
         self.send(`${name}:${event}`, data);
       },
       stream(event: string, signal?: AbortSignal): AsyncGenerator<unknown> {
-        return self.subs.stream(`${name}:${event}`, signal);
+        return self.subs.stream(key(event), signal);
       },
       leave(): void {
+        if (left) return;
+        left = true;
         self.send(self.proto.channelLeave, { channel: name });
         for (const unsub of unsubs) unsub();
         unsubs.length = 0;
         if (isAuth) self.authChannels.delete(name);
+        const next = (self.channelRefs.get(name) ?? 1) - 1;
+        if (next <= 0) self.channelRefs.delete(name);
+        else self.channelRefs.set(name, next);
       },
     };
 
@@ -917,5 +955,6 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.syncStore.clear();
     this.authChannels.clear();
     this.authTopics.clear();
+    this.channelRefs.clear();
   }
 }
