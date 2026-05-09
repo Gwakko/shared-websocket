@@ -338,6 +338,7 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
   const onConnect = useEffectEvent(() => handlers.onConnect?.());
   const onDisconnect = useEffectEvent(() => handlers.onDisconnect?.());
   const onReconnecting = useEffectEvent(() => handlers.onReconnecting?.());
+  const onReconnectFailed = useEffectEvent(() => handlers.onReconnectFailed?.());
   const onLeaderChange = useEffectEvent((isLeader: boolean) => handlers.onLeaderChange?.(isLeader));
   const onError = useEffectEvent((error: unknown) => handlers.onError?.(error));
   const onActive = useEffectEvent(() => handlers.onActive?.());
@@ -350,6 +351,7 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
       socket.onConnect(onConnect),
       socket.onDisconnect(onDisconnect),
       socket.onReconnecting(onReconnecting),
+      socket.onReconnectFailed(onReconnectFailed),
       socket.onLeaderChange(onLeaderChange),
       socket.onError(onError),
       socket.onActive(onActive),
@@ -359,6 +361,51 @@ export function useSocketLifecycle(handlers: SocketLifecycleHandlers): void {
     ];
     return () => unsubs.forEach((u) => u());
   }, [socket]);
+}
+
+/**
+ * Reactive reconnect state with a manual `reconnect` action. Use this to
+ * power a "Reconnect" snackbar/banner after auto-reconnect gives up.
+ *
+ * `hasFailed` is `true` after `reconnectMaxRetries` are exhausted. It resets
+ * to `false` once the connection succeeds again or the user calls `reconnect()`.
+ *
+ * @example
+ * function ConnectionBanner() {
+ *   const { hasFailed, reconnect } = useSocketReconnect();
+ *   if (!hasFailed) return null;
+ *   return (
+ *     <div className="snackbar">
+ *       Connection lost.
+ *       <button onClick={reconnect}>Reconnect</button>
+ *     </div>
+ *   );
+ * }
+ */
+export function useSocketReconnect(): {
+  hasFailed: boolean;
+  reconnect: () => void;
+} {
+  const socket = useSharedWebSocket();
+  const [hasFailed, setHasFailed] = useState(false);
+
+  const onFailed = useEffectEvent(() => setHasFailed(true));
+  const onConnected = useEffectEvent(() => setHasFailed(false));
+
+  useEffect(() => {
+    const unsubs = [
+      socket.onReconnectFailed(onFailed),
+      socket.onConnect(onConnected),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, [socket]);
+
+  const reconnect = useEffectEvent(() => {
+    setHasFailed(false);
+    socket.reconnect();
+  });
+
+  return { hasFailed, reconnect };
 }
 
 /**

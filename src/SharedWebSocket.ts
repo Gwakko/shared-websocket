@@ -33,6 +33,7 @@ interface SocketAdapter {
   readonly state: string;
   connect(): void | Promise<void>;
   send(data: unknown): void;
+  reconnect(): void;
   disconnect(): void;
   onMessage(fn: EventHandler): Unsubscribe;
   onStateChange(fn: (state: string) => void): Unsubscribe;
@@ -103,6 +104,16 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       }),
     );
 
+    // Leader listens for reconnect requests from followers
+    this.cleanups.push(
+      this.bus.subscribe<void>('ws:reconnect', () => {
+        if (this.coordinator.isLeader && this.socket) {
+          this.log.info('[SharedWS] manual reconnect requested by follower');
+          this.socket.reconnect();
+        }
+      }),
+    );
+
     // Sync across tabs
     this.cleanups.push(
       this.bus.subscribe<{ key: string; value: unknown }>('ws:sync', (msg) => {
@@ -133,6 +144,9 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
             break;
           case 'reconnecting':
             this.subs.emit('$lifecycle:reconnecting', undefined);
+            break;
+          case 'reconnectFailed':
+            this.subs.emit('$lifecycle:reconnectFailed', undefined);
             break;
           case 'leader':
             this.subs.emit('$lifecycle:leader', msg.isLeader);
@@ -226,6 +240,38 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   /** Called when WebSocket starts reconnecting (broadcast to all tabs). */
   onReconnecting(fn: () => void): Unsubscribe {
     return this.subs.on('$lifecycle:reconnecting', fn);
+  }
+
+  /**
+   * Called when auto-reconnect gives up after exhausting `reconnectMaxRetries`.
+   * Use this to show a "Reconnect" UI affordance (snackbar, banner, modal)
+   * so the user can call `ws.reconnect()` to try again.
+   *
+   * @example
+   * ws.onReconnectFailed(() => {
+   *   showSnackbar('Connection lost', { action: { label: 'Reconnect', onClick: () => ws.reconnect() } });
+   * });
+   */
+  onReconnectFailed(fn: () => void): Unsubscribe {
+    return this.subs.on('$lifecycle:reconnectFailed', fn);
+  }
+
+  /**
+   * Manually trigger a reconnect. Resets the retry counter and attempts a
+   * fresh connection. Safe to call from any tab — the leader actually owns
+   * the socket, followers route the request via BroadcastChannel.
+   *
+   * Use after `onReconnectFailed` fires to let the user retry.
+   *
+   * @example
+   * snackbar.action('Reconnect', () => ws.reconnect());
+   */
+  reconnect(): void {
+    if (this.coordinator.isLeader && this.socket) {
+      this.socket.reconnect();
+    } else {
+      this.bus.publish('ws:reconnect', undefined);
+    }
   }
 
   /** Called when this tab becomes leader or loses leadership. */
@@ -721,7 +767,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     });
 
     this.socket.onStateChange((state: string) => {
-      this.log.info('[SharedWS]', state === 'connected' ? '✓ connected' : state === 'reconnecting' ? '🔄 reconnecting' : `state: ${state}`);
+      this.log.info('[SharedWS]', state === 'connected' ? '✓ connected' : state === 'reconnecting' ? '🔄 reconnecting' : state === 'failed' ? '✗ reconnect failed' : `state: ${state}`);
       switch (state) {
         case 'connected':
           this.bus.broadcast('ws:lifecycle', { type: 'connect' });
@@ -732,6 +778,10 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
           break;
         case 'reconnecting':
           this.bus.broadcast('ws:lifecycle', { type: 'reconnecting' });
+          break;
+        case 'failed':
+          this.bus.broadcast('ws:lifecycle', { type: 'reconnectFailed' });
+          this.bus.broadcast('ws:lifecycle', { type: 'disconnect' });
           break;
       }
     });

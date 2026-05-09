@@ -16,15 +16,16 @@
  *   { type: 'state', state: SocketState }
  */
 
-type SocketState = 'connecting' | 'connected' | 'reconnecting' | 'closed';
+type SocketState = 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'failed';
 
 interface WorkerCommand {
-  type: 'connect' | 'send' | 'disconnect';
+  type: 'connect' | 'send' | 'disconnect' | 'reconnect';
   url?: string;
   protocols?: string[];
   data?: unknown;
   reconnect?: boolean;
   reconnectMaxDelay?: number;
+  reconnectMaxRetries?: number;
   heartbeatInterval?: number;
   bufferSize?: number;
 }
@@ -40,11 +41,13 @@ let currentUrl = '';
 let currentProtocols: string[] = [];
 let shouldReconnect = true;
 let maxDelay = 30_000;
+let maxRetries = Infinity;
 let heartbeatInterval = 30_000;
 let maxBuffer = 100;
 
 // Backoff state
 let backoffDelay = 1000;
+let reconnectAttempts = 0;
 
 function setState(s: SocketState) {
   state = s;
@@ -57,6 +60,7 @@ function connect(url: string, protocols: string[]) {
   currentUrl = url;
   currentProtocols = protocols;
   backoffDelay = 1000;
+  reconnectAttempts = 0;
 
   doConnect();
 }
@@ -76,6 +80,7 @@ function doConnect() {
   ws.onopen = () => {
     setState('connected');
     backoffDelay = 1000;
+    reconnectAttempts = 0;
     self.postMessage({ type: 'open' });
     flushBuffer();
     startHeartbeat();
@@ -161,6 +166,12 @@ function stopHeartbeat() {
 }
 
 function scheduleReconnect() {
+  reconnectAttempts++;
+  if (reconnectAttempts > maxRetries) {
+    setState('failed');
+    return;
+  }
+
   setState('reconnecting');
   clearReconnect();
 
@@ -172,6 +183,25 @@ function scheduleReconnect() {
   }, delay);
 
   backoffDelay = Math.min(backoffDelay * 2, maxDelay);
+}
+
+function manualReconnect() {
+  if (disposed) return;
+  clearReconnect();
+  reconnectAttempts = 0;
+  backoffDelay = 1000;
+
+  if (ws) {
+    ws.onclose = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      ws.close(1000, 'manual reconnect');
+    }
+    ws = null;
+  }
+
+  doConnect();
 }
 
 function clearReconnect() {
@@ -189,6 +219,7 @@ self.onmessage = (ev: MessageEvent<WorkerCommand>) => {
     case 'connect':
       if (cmd.reconnect !== undefined) shouldReconnect = cmd.reconnect;
       if (cmd.reconnectMaxDelay) maxDelay = cmd.reconnectMaxDelay;
+      if (cmd.reconnectMaxRetries !== undefined) maxRetries = cmd.reconnectMaxRetries;
       if (cmd.heartbeatInterval) heartbeatInterval = cmd.heartbeatInterval;
       if (cmd.bufferSize) maxBuffer = cmd.bufferSize;
       connect(cmd.url!, cmd.protocols ?? []);
@@ -196,6 +227,10 @@ self.onmessage = (ev: MessageEvent<WorkerCommand>) => {
 
     case 'send':
       send(cmd.data);
+      break;
+
+    case 'reconnect':
+      manualReconnect();
       break;
 
     case 'disconnect':

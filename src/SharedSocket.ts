@@ -99,7 +99,7 @@ export class SharedSocket implements Disposable {
     this.ws.onclose = () => {
       this.stopHeartbeat();
       if (!this.disposed && this.opts.reconnect) {
-        this.reconnect();
+        this.scheduleReconnect();
       } else {
         this.setState('closed');
       }
@@ -148,11 +148,35 @@ export class SharedSocket implements Disposable {
     return () => this.onStateChangeFns.delete(fn);
   }
 
-  private reconnect(): void {
+  /**
+   * Manually trigger a reconnect. Resets the retry counter and clears any
+   * scheduled backoff so the next attempt happens immediately. Use after
+   * `state === 'failed'` to let the user retry, or any time to force a
+   * fresh connection.
+   */
+  reconnect(): void {
+    if (this.disposed) return;
+    this.clearReconnect();
+    this.reconnectAttempts = 0;
+
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.onmessage = null;
+      this.ws.onerror = null;
+      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+        this.ws.close(1000, 'manual reconnect');
+      }
+      this.ws = null;
+    }
+
+    void this.connect();
+  }
+
+  private scheduleReconnect(): void {
     this.reconnectAttempts++;
 
     if (this.reconnectAttempts > this.opts.reconnectMaxRetries) {
-      this.setState('closed');
+      this.setState('failed');
       return;
     }
 

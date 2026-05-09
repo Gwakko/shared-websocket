@@ -113,6 +113,11 @@ export class WorkerSocket implements Disposable {
     this.worker?.postMessage({ type: 'send', data });
   }
 
+  /** Manually trigger reconnect: resets retry counter, attempts a fresh connection. */
+  reconnect(): void {
+    this.worker?.postMessage({ type: 'reconnect' });
+  }
+
   disconnect(): void {
     this.worker?.postMessage({ type: 'disconnect' });
     setTimeout(() => {
@@ -158,16 +163,24 @@ export class WorkerSocket implements Disposable {
       function stopHB() { if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; } }
       function reconnect() {
         attempts++;
-        if (attempts > maxRetries) { setState('closed'); return; }
+        if (attempts > maxRetries) { setState('failed'); return; }
         setState('reconnecting');
         const j = delay * 0.25 * (Math.random() * 2 - 1);
         reconnectTimer = setTimeout(() => { if (!disposed) connect(); }, Math.min(delay + j, maxDelay));
         delay = Math.min(delay * 2, maxDelay);
       }
+      function manualReconnect() {
+        if (disposed) return;
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        attempts = 0; delay = 1000;
+        if (ws) { ws.onclose = null; ws.onmessage = null; ws.onerror = null; if (ws.readyState < 2) ws.close(1000, 'manual reconnect'); ws = null; }
+        connect();
+      }
       self.onmessage = (e) => {
         const c = e.data;
         if (c.type === 'connect') { url = c.url; protocols = c.protocols || []; shouldReconnect = c.reconnect ?? true; maxDelay = c.reconnectMaxDelay || 30000; maxRetries = c.reconnectMaxRetries ?? Infinity; hbInterval = c.heartbeatInterval || 30000; maxBuf = c.bufferSize || 100; if (c.pingPayload) pingPayload = JSON.stringify(c.pingPayload); connect(); }
         if (c.type === 'send') send(c.data);
+        if (c.type === 'reconnect') manualReconnect();
         if (c.type === 'disconnect') { disposed = true; stopHB(); if (reconnectTimer) clearTimeout(reconnectTimer); if (ws) { ws.onclose = null; if (ws.readyState < 2) ws.close(1000); ws = null; } buffer = []; setState('closed'); }
       };
     `;

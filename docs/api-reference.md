@@ -135,7 +135,8 @@ All hooks use context internally — no need to pass `ws`. Every hook accepts an
 | `useSocketCallback<T>(event, cb)` | — | Fire-and-forget (no state) |
 | `useSocketAuth()` | `{ isAuthenticated, authenticate, deauthenticate }` | — |
 | `useSocketStatus()` | `{ connected, tabRole, isAuthenticated }` | — |
-| `useSocketLifecycle(handlers)` | — | onConnect, onDisconnect, onReconnecting, onLeaderChange, onError, onAuthChange |
+| `useSocketLifecycle(handlers)` | — | onConnect, onDisconnect, onReconnecting, onReconnectFailed, onLeaderChange, onError, onAuthChange |
+| `useSocketReconnect()` | `{ hasFailed, reconnect }` | Drive a "Reconnect" snackbar after retries are exhausted |
 | `useChannel(name, opts?)` | `Channel` handle | Auto-join/leave, `{ auth: true }` for auth-aware |
 
 ```tsx

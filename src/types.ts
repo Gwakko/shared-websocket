@@ -1,4 +1,4 @@
-export type SocketState = 'connecting' | 'connected' | 'reconnecting' | 'closed';
+export type SocketState = 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'failed';
 export type TabRole = 'leader' | 'follower';
 export type Unsubscribe = () => void;
 export type EventHandler<T = unknown> = (data: T) => void;
@@ -136,6 +136,8 @@ export interface SocketLifecycleHandlers {
   onConnect?: () => void;
   onDisconnect?: () => void;
   onReconnecting?: () => void;
+  /** Called when auto-reconnect gives up after exhausting reconnectMaxRetries. */
+  onReconnectFailed?: () => void;
   onLeaderChange?: (isLeader: boolean) => void;
   onError?: (error: unknown) => void;
   /** Called when this tab becomes visible/focused. */

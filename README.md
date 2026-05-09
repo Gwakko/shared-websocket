@@ -210,7 +210,8 @@ usePush('notification', {
 | **Custom Serialization** | `serialize`/`deserialize` — JSON, MessagePack, Protobuf |
 | **Per-Event Serializers** | `ws.serializer(event, fn)` — binary for specific events |
 | **Runtime Auth** | `authenticate(token)` / `deauthenticate()` on existing connection |
-| **Lifecycle Hooks** | onConnect, onDisconnect, onActive, onInactive, onLeaderChange, onAuthChange |
+| **Lifecycle Hooks** | onConnect, onDisconnect, onReconnecting, onReconnectFailed, onActive, onInactive, onLeaderChange, onAuthChange |
+| **Manual Reconnect** | `ws.reconnect()` resets retry counter — pair with `onReconnectFailed` for a "Reconnect" snackbar |
 | **Debug/Logger** | `debug: true` + injectable logger (pino, Sentry) |
 | **Event Protocol** | Configurable field names (Socket.IO, Phoenix, Laravel Echo) |
 | **Auth** | URL param (`auth` callback / `authToken`) + runtime `authenticate()`/`deauthenticate()` |

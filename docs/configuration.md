@@ -50,35 +50,124 @@ new SharedWebSocket('wss://api.example.com/ws', {
   reconnectMaxDelay: 10_000,  // cap backoff at 10s
 });
 
-// Sequence: ~1s → ~2s → ~4s → ~8s → ~10s → closed
-// After 5 failures: state → 'closed', onDisconnect fires
+// Sequence: ~1s → ~2s → ~4s → ~8s → ~10s → failed
+// After 5 failures: state → 'failed', onReconnectFailed fires (then onDisconnect)
 ```
 
-**React — show UI on max retries:**
+### Recovering after max retries
+
+When auto-reconnect gives up, the library exposes:
+
+- **`onReconnectFailed`** — lifecycle hook that fires once retries are exhausted. Use it to surface a UI (snackbar, banner, modal).
+- **`ws.reconnect()`** — imperative API that resets the retry counter and forces a fresh attempt. Call it from the user's "Reconnect" button.
+- **Auto-reset on success** — the retry counter resets to `0` whenever a connection succeeds, so a transient drop doesn't shorten the next round of retries.
+
+`ws.reconnect()` is also safe to call any time (e.g., from a "Refresh" button while still in `reconnecting`) — it cancels the pending backoff and connects immediately. Followers route the request to the leader tab automatically via BroadcastChannel.
+
+**Vanilla — snackbar with reconnect button:**
+
+```typescript
+const ws = new SharedWebSocket('wss://api.example.com/ws', {
+  reconnectMaxRetries: 5,
+});
+
+ws.onReconnectFailed(() => {
+  const bar = document.createElement('div');
+  bar.className = 'snackbar';
+  bar.innerHTML = `Connection lost. <button>Reconnect</button>`;
+  bar.querySelector('button')!.addEventListener('click', () => {
+    ws.reconnect();   // resets retry counter, tries fresh connection
+    bar.remove();
+  });
+  document.body.appendChild(bar);
+});
+
+ws.onConnect(() => {
+  document.querySelector('.snackbar')?.remove();
+});
+
+ws.connect();
+```
+
+**React — `useSocketReconnect` hook:**
 
 ```tsx
-useSocketLifecycle({
-  onDisconnect: () => {
-    // Fires when connection closes (including max retries reached)
-    showBanner('Connection lost. Please refresh the page.');
-  },
-  onReconnecting: () => {
-    showBanner('Reconnecting...');
-  },
-  onConnect: () => {
-    hideBanner();
-  },
-});
+import { useSocketReconnect } from '@gwakko/shared-websocket/react';
+
+function ConnectionBanner() {
+  const { hasFailed, reconnect } = useSocketReconnect();
+  if (!hasFailed) return null;
+  return (
+    <div className="snackbar">
+      <span>Connection lost.</span>
+      <button onClick={reconnect}>Reconnect</button>
+    </div>
+  );
+}
+
+// Mount once near the root:
+// <ConnectionBanner />
 ```
 
-**Vue — show UI on max retries:**
+Or via `useSocketLifecycle` if you'd rather drive a toast library directly:
+
+```tsx
+import { useSocketLifecycle, useSharedWebSocket } from '@gwakko/shared-websocket/react';
+import { toast } from 'sonner';
+
+function App() {
+  const ws = useSharedWebSocket();
+  useSocketLifecycle({
+    onReconnecting: () => toast.loading('Reconnecting…', { id: 'ws' }),
+    onConnect: () => toast.success('Connected', { id: 'ws' }),
+    onReconnectFailed: () => {
+      toast.error('Connection lost', {
+        id: 'ws',
+        duration: Infinity,
+        action: { label: 'Reconnect', onClick: () => ws.reconnect() },
+      });
+    },
+  });
+  return null;
+}
+```
+
+**Vue — `useSocketReconnect` composable:**
 
 ```vue
-<script setup>
+<script setup lang="ts">
+import { useSocketReconnect } from '@gwakko/shared-websocket/vue';
+
+const { hasFailed, reconnect } = useSocketReconnect();
+</script>
+
+<template>
+  <div v-if="hasFailed" class="snackbar">
+    <span>Connection lost.</span>
+    <button @click="reconnect">Reconnect</button>
+  </div>
+</template>
+```
+
+Or wire into a toast library via `useSocketLifecycle`:
+
+```vue
+<script setup lang="ts">
+import { useSocketLifecycle, useSharedWebSocket } from '@gwakko/shared-websocket/vue';
+import { useToast } from 'vue-toastification';
+
+const ws = useSharedWebSocket();
+const toast = useToast();
+
 useSocketLifecycle({
-  onDisconnect: () => showBanner('Connection lost'),
-  onReconnecting: () => showBanner('Reconnecting...'),
-  onConnect: () => hideBanner(),
+  onReconnecting: () => toast.info('Reconnecting…'),
+  onConnect: () => toast.success('Connected'),
+  onReconnectFailed: () => {
+    toast.error('Connection lost. Click to reconnect.', {
+      timeout: false,
+      onClick: () => ws.reconnect(),
+    });
+  },
 });
 </script>
 ```
