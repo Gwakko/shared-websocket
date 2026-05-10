@@ -21,7 +21,14 @@ export class MessageBus implements Disposable {
 
   subscribe<T>(topic: string, fn: (data: T) => void): Unsubscribe {
     const wrapper: Listener = (msg) => {
-      if (msg.source !== this.tabId) fn(msg.data as T);
+      // `broadcast` is "fan out to all tabs INCLUDING me" — `broadcast()`
+      // explicitly self-delivers via handleMessage so the leader's own
+      // handlers fire for events it originated (e.g. ws:message after the
+      // leader receives a server frame). `publish` is fire-and-forget to
+      // OTHER tabs, so skip self-originated publish messages.
+      if (msg.type !== 'publish' || msg.source !== this.tabId) {
+        fn(msg.data as T);
+      }
     };
     this.addListener(topic, wrapper);
     return () => this.removeListener(topic, wrapper);

@@ -4,6 +4,32 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.5]
+
+### Fixed
+
+- **Critical: leader-tab handlers now fire for incoming events.**
+  `MessageBus.subscribe`'s wrapper rejected any message whose `source`
+  matched the local `tabId`, but `MessageBus.broadcast()` deliberately
+  self-delivers via `handleMessage(msg)`. The two cancelled out: the
+  leader tab broadcasted `ws:message` after receiving a server frame,
+  the broadcast was self-delivered, and the wrapper silently dropped
+  it. Net effect: **the leader tab's own `ws.on(...)`,
+  `useSocketEvent`, `useSocketCallback`, `useSocketStream`,
+  `useSocketLifecycle` handlers never fired** for server events,
+  lifecycle changes, or `ws.sync` updates the leader originated.
+
+  This was visible immediately in single-tab apps (the leader is the
+  only tab; no events ever reached handlers) and partially in
+  multi-tab setups (other tabs worked; the leader didn't).
+
+  The fix narrows the self-skip to `type: 'publish'` (fire-and-forget
+  to other tabs) so `type: 'broadcast'` (intentionally fan-out-to-all
+  including self) reaches local handlers.
+
+  Pre-existing since the first MessageBus commit — affects every
+  prior 0.x release.
+
 ## [0.14.4]
 
 ### Changed
