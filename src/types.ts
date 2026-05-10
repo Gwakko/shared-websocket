@@ -59,6 +59,16 @@ export interface SharedWebSocketOptions<TEvents extends EventMap = EventMap> {
   reconnectMaxDelay?: number;
   /** Max reconnect attempts before giving up (default: Infinity — retry forever). */
   reconnectMaxRetries?: number;
+  /**
+   * WebSocket close codes that indicate "auth failed — don't retry."
+   * On these codes the library sets state to 'failed' and stops auto-reconnect
+   * instead of looping with the same expired credentials. Default: `[1008]`
+   * (PolicyViolation). Add 4xxx app-specific codes if your server uses them.
+   *
+   * To recover, call `ws.authenticate(newToken)` (auto-reconnects when
+   * the local tab is the leader) or `ws.reconnect()` directly.
+   */
+  authFailureCloseCodes?: number[];
   heartbeatInterval?: number;
   electionTimeout?: number;
   leaderHeartbeat?: number;

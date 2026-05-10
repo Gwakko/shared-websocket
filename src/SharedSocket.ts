@@ -8,6 +8,8 @@ interface SharedSocketOptions {
   reconnectMaxDelay?: number;
   /** Max reconnect attempts before giving up (default: Infinity). */
   reconnectMaxRetries?: number;
+  /** Close codes that mean "auth failed — stop reconnect." Default: [1008]. */
+  authFailureCloseCodes?: number[];
   heartbeatInterval?: number;
   sendBuffer?: number;
   auth?: () => string | Promise<string>;
@@ -34,7 +36,8 @@ export class SharedSocket implements Disposable {
 
   private reconnectAttempts = 0;
 
-  private readonly opts: Required<Omit<SharedSocketOptions, 'auth' | 'authToken' | 'authParam' | 'pingPayload' | 'serialize' | 'deserialize'>> & {
+  private readonly opts: Required<Omit<SharedSocketOptions, 'auth' | 'authToken' | 'authParam' | 'pingPayload' | 'serialize' | 'deserialize' | 'authFailureCloseCodes'>> & {
+    authFailureCloseCodes: ReadonlySet<number>;
     auth?: () => string | Promise<string>;
     authToken?: string;
     authParam: string;
@@ -52,6 +55,7 @@ export class SharedSocket implements Disposable {
       reconnect: options.reconnect ?? true,
       reconnectMaxDelay: options.reconnectMaxDelay ?? 30_000,
       reconnectMaxRetries: options.reconnectMaxRetries ?? Infinity,
+      authFailureCloseCodes: new Set(options.authFailureCloseCodes ?? [1008]),
       heartbeatInterval: options.heartbeatInterval ?? 30_000,
       sendBuffer: options.sendBuffer ?? 100,
       auth: options.auth,
@@ -96,8 +100,14 @@ export class SharedSocket implements Disposable {
       for (const fn of this.onMessageFns) fn(data);
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (ev) => {
       this.stopHeartbeat();
+      if (this.opts.authFailureCloseCodes.has(ev.code)) {
+        // Auth-failure close code — don't burn retries with stale creds.
+        // User must call ws.authenticate(freshToken) or ws.reconnect() to resume.
+        this.setState('failed');
+        return;
+      }
       if (!this.disposed && this.opts.reconnect) {
         this.scheduleReconnect();
       } else {

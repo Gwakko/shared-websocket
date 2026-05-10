@@ -145,6 +145,18 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       }),
     );
 
+    // Conditional resume — only reconnect if the leader's socket gave up
+    // (e.g. auth-failure close code). Sent by authenticate() from followers
+    // so they can recover with fresh creds without disrupting healthy tabs.
+    this.cleanups.push(
+      this.bus.subscribe<void>('ws:authenticate-resume', () => {
+        if (this.coordinator.isLeader && this.socket?.state === 'failed') {
+          this.log.info('[SharedWS] resume requested after auth — reconnecting failed socket');
+          this.socket.reconnect();
+        }
+      }),
+    );
+
     // Sync across tabs
     this.cleanups.push(
       this.bus.subscribe<{ key: string; value: unknown }>('ws:sync', (msg) => {
@@ -353,9 +365,23 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this._isAuthenticated = true;
     this.syncStore.set('$auth:token', token);
     this.bus.broadcast('ws:sync', { key: '$auth:token', value: token });
-    this.send(this.proto.authLogin, { token });
     this.bus.broadcast('ws:lifecycle', { type: 'auth', authenticated: true });
     this.log.info('[SharedWS] authenticated');
+
+    // If the leader's socket gave up (e.g. auth-failure close code), the new
+    // creds should restart the connection. reAuthenticateOnReconnect resends
+    // the auth-login event from syncStore once we're connected again.
+    if (this.coordinator.isLeader && this.socket && this.socket.state === 'failed') {
+      this.reconnect();
+      return;
+    }
+
+    if (!this.coordinator.isLeader) {
+      // Followers can't see leader state — hint to leader to reconnect IFF failed.
+      this.bus.publish('ws:authenticate-resume', undefined);
+    }
+
+    this.send(this.proto.authLogin, { token });
   }
 
   /**
@@ -808,6 +834,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       reconnect: this.options.reconnect,
       reconnectMaxDelay: this.options.reconnectMaxDelay,
       reconnectMaxRetries: this.options.reconnectMaxRetries,
+      authFailureCloseCodes: this.options.authFailureCloseCodes,
       heartbeatInterval: this.options.heartbeatInterval,
       sendBuffer: this.options.sendBuffer,
       pingPayload: this.proto.ping,

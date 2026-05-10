@@ -26,6 +26,7 @@ interface WorkerCommand {
   reconnect?: boolean;
   reconnectMaxDelay?: number;
   reconnectMaxRetries?: number;
+  authFailureCloseCodes?: number[];
   heartbeatInterval?: number;
   bufferSize?: number;
 }
@@ -42,6 +43,7 @@ let currentProtocols: string[] = [];
 let shouldReconnect = true;
 let maxDelay = 30_000;
 let maxRetries = Infinity;
+let authFailureCloseCodes: Set<number> = new Set([1008]);
 let heartbeatInterval = 30_000;
 let maxBuffer = 100;
 
@@ -100,6 +102,10 @@ function doConnect() {
     stopHeartbeat();
     self.postMessage({ type: 'close', code: ev.code, reason: ev.reason });
 
+    if (authFailureCloseCodes.has(ev.code)) {
+      setState('failed');
+      return;
+    }
     if (!disposed && shouldReconnect && ev.code !== 1000) {
       scheduleReconnect();
     } else {
@@ -220,6 +226,7 @@ self.onmessage = (ev: MessageEvent<WorkerCommand>) => {
       if (cmd.reconnect !== undefined) shouldReconnect = cmd.reconnect;
       if (cmd.reconnectMaxDelay) maxDelay = cmd.reconnectMaxDelay;
       if (cmd.reconnectMaxRetries !== undefined) maxRetries = cmd.reconnectMaxRetries;
+      if (cmd.authFailureCloseCodes) authFailureCloseCodes = new Set(cmd.authFailureCloseCodes);
       if (cmd.heartbeatInterval) heartbeatInterval = cmd.heartbeatInterval;
       if (cmd.bufferSize) maxBuffer = cmd.bufferSize;
       connect(cmd.url!, cmd.protocols ?? []);
