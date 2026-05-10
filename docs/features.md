@@ -650,6 +650,38 @@ await withSocket(url, async ({ ws, signal }) => {
 });
 ```
 
+> **Always pass an `AbortSignal` if you don't use `withSocket`.**
+> A `for await` loop without a signal keeps the underlying handler
+> registered until you explicitly `break`. If your component unmounts
+> mid-iteration, the handler survives — leaking memory and continuing
+> to enqueue values that nothing reads. The signal is what tells
+> `stream()` to unsubscribe and exit the loop.
+
+```tsx
+// React — ❌ leaks on unmount: nothing aborts the stream
+useEffect(() => {
+  (async () => {
+    for await (const tick of ws.stream('trading.tick')) {
+      setPrice(tick.price);
+    }
+  })();
+}, []);
+
+// React — ✅ AbortController fires on unmount, stream exits cleanly
+useEffect(() => {
+  const ctrl = new AbortController();
+  (async () => {
+    for await (const tick of ws.stream('trading.tick', ctrl.signal)) {
+      setPrice(tick.price);
+    }
+  })();
+  return () => ctrl.abort();
+}, []);
+```
+
+(Or use `useSocketStream` / `useSocketCallback` — both auto-cleanup on
+unmount and don't need the dance above.)
+
 ```tsx
 // React — stream into state with limit
 const [logs, setLogs] = useState<LogEntry[]>([]);

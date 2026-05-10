@@ -274,6 +274,23 @@ Incoming: WebSocket.onmessage
 | Web Worker | ✅ | ✅ | ✅ | ✅ |
 | AsyncGenerator | 63+ | 57+ | 12+ | 79+ |
 
+**`BroadcastChannel` is required and has no fallback.** The library
+constructs one synchronously in `new SharedWebSocket(...)`, so an
+unsupported environment throws `ReferenceError: BroadcastChannel is
+not defined`. Practical implications:
+
+- **iOS Safari** — fully works on 15.4+ (March 2022). Older iOS will
+  throw; gate construction behind a feature check if you ship to those
+  versions.
+- **Some Android webviews / older WKWebView** — same caveat.
+- **Node / SSR** — no `BroadcastChannel`. Construct the socket inside
+  `useEffect` (React) / `onMounted` (Vue), or behind a `typeof window
+  !== 'undefined'` guard. Don't instantiate in module scope on the
+  server.
+- **Tests (jsdom)** — recent jsdom (>= 22) implements
+  `BroadcastChannel`. Older jsdom or `happy-dom` may need a polyfill
+  or a stub.
+
 ## License
 
 MIT

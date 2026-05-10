@@ -650,6 +650,20 @@ import type { Logger } from '@gwakko/shared-websocket';
 const myLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 ```
 
+### What level does the library log at?
+
+This matters when wiring the logger to alerting (Sentry, Datadog, etc.) —
+you don't want expected-state messages to page on-call.
+
+| Level | What the library emits |
+|-------|------------------------|
+| `debug` | Per-event traffic: `→ send`, `← recv`, middleware drops, tab visibility, init details. High-volume — keep this off in production unless you're investigating something specific. |
+| `info` | One-shot lifecycle: `becameLeader`, `connected`, state transitions, `authenticated`, `manual reconnect`. Low-volume, useful as breadcrumbs. |
+| `warn` | Server-initiated auth revocation. Today this is the only `warn` site. |
+| `error` | **The library does not call `error` itself.** Reserved for user logger overrides — feel free to call it from middleware or your own handlers. |
+
+Practical implication for the Sentry mapping above: routing `error → captureException` is safe because the library never triggers it as a result of expected reconnect/election behavior. Routing `warn → captureException` would also work today (single site, real signal). Routing `info → captureException` would page on every leader election.
+
 ```tsx
 // React — debug + Sentry in Provider
 <SharedWebSocketProvider
