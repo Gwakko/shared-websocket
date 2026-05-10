@@ -120,6 +120,29 @@ export interface SharedWebSocketOptions<TEvents extends EventMap = EventMap> {
   /** Query parameter name for the token (default: "token"). */
   authParam?: string;
   /**
+   * Optional. Periodic token refresh — runs on the leader tab only via
+   * `setInterval(refresh, refreshTokenInterval)`. When the timer fires
+   * and the connection is currently authenticated, the returned token
+   * is passed to `authenticate()` so the server sees the new credentials
+   * before the old one expires. Falls back to `auth` if unset.
+   *
+   * Use this for long-running tabs where the server would otherwise
+   * close with an auth-failure code mid-session. Pair with a sensible
+   * interval — typically ~80% of your token TTL (e.g. 48 minutes for a
+   * 60-minute token).
+   *
+   * If the callback throws, the failure is logged at `warn` and the
+   * timer keeps running for the next interval; the server will still
+   * close on its own when the token expires, at which point
+   * `authFailureCloseCodes` and `ws.authenticate(...)` handle recovery.
+   */
+  refresh?: () => string | Promise<string>;
+  /**
+   * Refresh interval in milliseconds. Disabled when unset or `<= 0`.
+   * No default — opt-in.
+   */
+  refreshTokenInterval?: number;
+  /**
    * Max number of follower-routed dispatches each tab buffers locally for
    * replay across leader handover. When the leader dies between receiving
    * a follower's dispatch and writing it to the socket, the new leader
@@ -191,6 +214,11 @@ export interface EventProtocol {
    * using `channelJoin` / `channelLeave` / `topicSubscribe` / etc. for
    * control-frame event names.
    *
+   * Return-value contract:
+   *   - any concrete value → use as the wire frame
+   *   - `null`              → drop the frame (intentional filter / no-op)
+   *   - `undefined`         → fall back to the library default for this kind
+   *
    * @example Flat envelope (Pusher / Reverb / custom Go server)
    * frameBuilder: (kind, p) => {
    *   switch (kind) {
@@ -202,7 +230,7 @@ export interface EventProtocol {
    *       return p.channel
    *         ? { type: 'event', channel: p.channel, event: p.event, data: p.data, ...p.extras }
    *         : { type: 'event', event: p.event, data: p.data, ...p.extras };
-   *     default: return null;
+   *     default: return undefined; // unknown kind → library default
    *   }
    * }
    */

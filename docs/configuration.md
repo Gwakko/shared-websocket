@@ -594,10 +594,189 @@ populated based on kind (see TypeScript types for the per-kind shape).
 `events.ping` value as-is so they can run inside the Web Worker without
 crossing back to the main thread. Configure ping shape via `events.ping`.
 
-**Returning `null`/`undefined` from `frameBuilder` drops the frame** (with
-a debug log). Use it to filter or to no-op kinds your server doesn't accept.
+**Return-value contract:**
+- a concrete value → that becomes the wire frame
+- `null` → drop the frame intentionally (filter / no-op)
+- `undefined` → fall back to the library default for this kind
 
-## Middleware
+The `undefined` fallback lets you override only the kinds that differ
+from the default. Use `null` (not `undefined`) when you actually want
+the frame dropped.
+
+### Server compatibility samples
+
+Worked configurations for common server protocols. Each is a starting
+point — wire formats vary by version, so verify against your server.
+
+#### Pusher / Soketi / Reverb (Pusher protocol)
+
+The default frame shape works; just override the control-frame names:
+
+```typescript
+new SharedWebSocket('wss://ws.pusherapp.com/app/KEY?protocol=7&client=js&version=4.4', {
+  events: {
+    channelJoin: 'pusher:subscribe',
+    channelLeave: 'pusher:unsubscribe',
+    ping: { event: 'pusher:ping', data: {} },
+    authLogin: 'pusher:auth',
+  },
+});
+
+ws.channel('presence-room-1');
+// → { event: 'pusher:subscribe', data: { channel: 'presence-room-1' } }
+
+ws.send('client-typing', { user: 'alice' });
+// → { event: 'client-typing', data: { user: 'alice' } }
+```
+
+For private/presence channels with signed auth, hook the auth signature
+into the `subscribe` frame via `frameBuilder`:
+
+```typescript
+events: {
+  frameBuilder: (kind, p) => {
+    if (kind === 'subscribe') {
+      const channel = p.channel!;
+      return {
+        event: 'pusher:subscribe',
+        data: channel.startsWith('private-') || channel.startsWith('presence-')
+          ? { channel, auth: signChannel(channel) }
+          : { channel },
+      };
+    }
+    // Defer everything else to library-default behavior by reproducing it inline:
+    return undefined; // or hand-build per kind — see types.ts FrameKind
+  },
+}
+```
+
+#### Flat-fields server (e.g. custom Go or Rust WS)
+
+Useful when the server expects every routing field at the top level:
+
+```typescript
+import { SharedWebSocket, type FrameKind, type FramePayload } from '@gwakko/shared-websocket';
+
+new SharedWebSocket('wss://api.example.com/ws', {
+  events: {
+    eventField: 'event',
+    dataField: 'data',
+    frameBuilder: (kind: FrameKind, p: FramePayload) => {
+      switch (kind) {
+        case 'subscribe':         return { type: 'subscribe',   channel: p.channel };
+        case 'unsubscribe':       return { type: 'unsubscribe', channel: p.channel };
+        case 'topic-subscribe':   return { type: 'topic.subscribe',   topic: p.topic };
+        case 'topic-unsubscribe': return { type: 'topic.unsubscribe', topic: p.topic };
+        case 'auth-login':        return { type: 'auth',   token: p.data };
+        case 'auth-logout':       return { type: 'logout' };
+        case 'event':
+          return p.channel
+            ? { type: 'event', channel: p.channel, event: p.event, data: p.data, ...p.extras }
+            : { type: 'event', event: p.event, data: p.data, ...p.extras };
+      }
+    },
+  },
+});
+```
+
+Incoming messages keep arriving in the library's expected shape — make
+sure your server emits `event` and `data` fields (or override
+`eventField`/`dataField` to match what it does emit).
+
+#### ActionCable (Rails)
+
+ActionCable identifies channels with a JSON-stringified identifier
+object and wraps user data with a `command: "message"` envelope. Auth
+is typically handled by the Rails session cookie on the WS upgrade —
+the library's `auth-login` / `auth-logout` frames are no-ops here.
+
+```typescript
+new SharedWebSocket('wss://example.com/cable', {
+  events: {
+    ping: { type: 'ping' },
+    frameBuilder: (kind, p) => {
+      switch (kind) {
+        case 'subscribe':
+          // p.channel is whatever you passed to ws.channel(...) — usually
+          // a JSON.stringify of the identifier ({ channel, ...params }).
+          return { command: 'subscribe', identifier: p.channel };
+        case 'unsubscribe':
+          return { command: 'unsubscribe', identifier: p.channel };
+        case 'event':
+          return {
+            command: 'message',
+            identifier: p.channel ?? '',
+            data: JSON.stringify({ action: p.event, ...(p.data as object ?? {}) }),
+          };
+        // Auth via cookie — drop these
+        case 'auth-login':
+        case 'auth-logout':
+          return null;
+        default:
+          return null;
+      }
+    },
+  },
+});
+
+const chat = ws.channel(JSON.stringify({ channel: 'ChatChannel', room: 'general' }));
+chat.send('speak', { text: 'Hello!' });
+// → { command: 'message', identifier: '...', data: '{"action":"speak","text":"Hello!"}' }
+```
+
+You'll likely also want a custom `deserialize` since ActionCable wraps
+inbound messages in `{ identifier, message }` — strip that envelope so
+the library sees `{ event, data }` (or override `eventField`/`dataField`
+to match).
+
+#### Phoenix Channels (Elixir)
+
+Phoenix uses an array form `[join_ref, ref, topic, event, payload]` (v2
+default) and replies with `phx_reply` events whose `payload.status`
+indicates success. The structural sample below is a starting point;
+ref tracking depends on your phoenix client version.
+
+```typescript
+let _ref = 0;
+const nextRef = () => String(++_ref);
+const joinRefs = new Map<string, string>(); // topic → join_ref
+
+new SharedWebSocket('wss://example.com/socket/websocket?vsn=2.0.0', {
+  events: {
+    ping: [null, null, 'phoenix', 'heartbeat', {}],
+    frameBuilder: (kind, p) => {
+      switch (kind) {
+        case 'subscribe': {
+          const ref = nextRef();
+          joinRefs.set(p.channel!, ref);
+          return [ref, ref, p.channel, 'phx_join', {}];
+        }
+        case 'unsubscribe':
+          return [joinRefs.get(p.channel!) ?? null, nextRef(), p.channel, 'phx_leave', {}];
+        case 'event':
+          return [joinRefs.get(p.channel!) ?? null, nextRef(), p.channel ?? '', p.event ?? '', p.data ?? {}];
+        case 'auth-login':
+        case 'auth-logout':
+          return null; // auth is part of the connect URL in Phoenix
+      }
+    },
+    channelAckMatcher: (frame, channel) => {
+      if (!Array.isArray(frame)) return 'pending';
+      const [, , topic, event, payload] = frame as [unknown, unknown, string, string, { status?: string }];
+      if (topic !== channel || event !== 'phx_reply') return 'pending';
+      return payload?.status === 'ok' ? 'ok' : 'reject';
+    },
+    channelAckTimeout: 3000,
+  },
+});
+
+const room = ws.channel('rooms:lobby');
+await room.ready; // resolves on phx_reply ok, rejects on error or timeout
+room.on('new_msg', renderMsg);
+```
+
+You'll also want a custom `deserialize` to convert inbound array frames
+back to `{ event, data }` so library-level event routing works.
 
 Transform or inspect messages before send / after receive.
 

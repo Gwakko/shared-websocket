@@ -16,6 +16,7 @@ Share **one** WebSocket connection across all browser tabs. Leader election via 
 - [Processing Pipeline](#processing-pipeline)
 - [Options](#options)
 - [Documentation](#documentation)
+- [Server Compatibility](#server-compatibility)
 - [Browser Support](#browser-support)
 
 ## How It Works
@@ -265,6 +266,25 @@ Incoming: WebSocket.onmessage
 | **[Tab Sync](docs/tab-sync.md)** | Standalone cross-tab state — no WebSocket needed |
 | **[Server Guide](docs/server-guide.md)** | Node.js, Go, PHP examples + system events |
 | **[Types](docs/types.md)** | All exported types with import examples |
+
+## Server Compatibility
+
+| Server | Status | Configuration |
+|---|---|---|
+| **Pusher / Soketi / Reverb** | ✅ Default + small overrides | `events: { channelJoin: 'pusher:subscribe', channelLeave: 'pusher:unsubscribe' }` |
+| **Custom 2-key `{ event, data }` server** | ✅ Default | none |
+| **Custom flat-fields server** (`{ type, channel, event, data }`) | ✅ via `frameBuilder` | [sample](docs/configuration.md#flat-fields-server-eg-custom-go-or-rust-ws) |
+| **Phoenix Channels** (Elixir) | ⚠️ Structural sample provided — verify against your phoenix client version | [sample](docs/configuration.md#phoenix-channels) |
+| **ActionCable** (Rails) | ⚠️ Subscribe/event sample; auth typically via session cookie | [sample](docs/configuration.md#actioncable-rails) |
+| **Centrifugo / GraphQL-over-WS / proprietary binary** | ⚠️ Use `frameBuilder` + custom `serialize`/`deserialize` | Hand-rolled — see [Custom Serialization](docs/configuration.md#custom-serialization) |
+
+The two-key default `{ [eventField]: <event>, [dataField]: <data> }`
+covers the common case. Anything else — extra top-level fields,
+array-form frames, custom control-frame discriminators — is handled
+by the `frameBuilder` hook (`events.frameBuilder` in
+`SharedWebSocketOptions`). Subscribe-acks are handled by
+`channelAckMatcher` so `await channel.ready` rejects on authz failures
+instead of silently never receiving events.
 
 ## Browser Support
 

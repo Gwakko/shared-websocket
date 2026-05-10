@@ -99,6 +99,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * (Map) so we drop oldest on overflow.
    */
   private pendingOutbound = new Map<string, { id: string; kind: FrameKind; payload: FramePayload; enqueuedAt: number }>();
+  /** Periodic refresh timer — leader only. Recreated on each leader handover. */
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly url: string,
@@ -926,10 +928,18 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   // The actual wire shape is decided by frameBuilder (custom) or
   // defaultFrameBuilder (legacy two-key { event, data } envelope).
 
-  /** Build the wire frame for a given kind. Honors custom `frameBuilder`. */
+  /**
+   * Build the wire frame for a given kind. Honors custom `frameBuilder`.
+   * Return-value contract:
+   *   - any concrete value → use as the frame
+   *   - `null`             → drop the frame (intentional filter)
+   *   - `undefined`        → fall back to the default builder for this kind
+   */
   private buildFrame(kind: FrameKind, payload: FramePayload): unknown {
     if (this.proto.frameBuilder) {
-      return this.proto.frameBuilder(kind, payload);
+      const result = this.proto.frameBuilder(kind, payload);
+      if (result !== undefined) return result;
+      // undefined → fall through to default for this kind
     }
     return this.defaultFrameBuilder(kind, payload);
   }
@@ -1015,8 +1025,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private transmit(kind: FrameKind, payload: FramePayload): void {
     if (!this.socket) return;
     let frame: unknown = this.buildFrame(kind, payload);
-    if (frame === null || frame === undefined) {
-      this.log.debug('[SharedWS] ✗ frameBuilder returned null/undefined — dropping', kind);
+    if (frame === null) {
+      this.log.debug('[SharedWS] ✗ frameBuilder dropped frame', kind);
       return;
     }
     for (const mw of this.outgoingMiddleware) {
@@ -1067,6 +1077,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private handleBecomeLeader(): void {
     this.log.info('[SharedWS] 👑 became leader');
     this.socket = this.createSocket();
+    this.startRefreshTimer();
 
     this.socket.onMessage((raw: unknown) => {
       let data: unknown = raw;
@@ -1268,15 +1279,55 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   }
 
   private handleLoseLeadership(): void {
+    this.stopRefreshTimer();
     if (this.socket) {
       this.socket[Symbol.dispose]();
       this.socket = null;
     }
   }
 
+  /**
+   * Start a leader-only periodic refresh of the auth token. The callback
+   * is `options.refresh` (preferred) or `options.auth` (fallback). When
+   * the timer fires and the connection is currently authenticated, the
+   * returned token is fed back through `authenticate()` so subscribers
+   * stay synced and the leader's socket re-issues auth-login.
+   *
+   * Idempotent — calling start while already running is a no-op.
+   */
+  private startRefreshTimer(): void {
+    if (this.refreshTimer) return;
+    const interval = this.options.refreshTokenInterval;
+    const refresh = this.options.refresh ?? this.options.auth;
+    if (!interval || interval <= 0 || !refresh) return;
+    if (!this.coordinator.isLeader) return;
+
+    this.refreshTimer = setInterval(async () => {
+      if (!this.coordinator.isLeader || !this._isAuthenticated) return;
+      try {
+        const token = await refresh();
+        if (!token) {
+          this.log.warn('[SharedWS] refresh() returned empty token — skipping');
+          return;
+        }
+        this.authenticate(token);
+      } catch (err) {
+        this.log.warn('[SharedWS] refresh() failed', err);
+      }
+    }, interval);
+  }
+
+  private stopRefreshTimer(): void {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+  }
+
   [Symbol.dispose](): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.stopRefreshTimer();
 
     this.coordinator[Symbol.dispose]();
 

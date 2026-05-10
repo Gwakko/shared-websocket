@@ -4,6 +4,47 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3]
+
+### Added
+
+- **`refresh` callback + `refreshTokenInterval`** — proposal #6 knob 3.
+  Pre-emptive token refresh for long-running tabs. The library runs a
+  leader-only `setInterval` that calls `refresh()` (or falls back to
+  `auth()` if `refresh` is unset) and feeds the new token through
+  `authenticate()`. Use ~80% of your token TTL as the interval.
+  ```ts
+  new SharedWebSocket(url, {
+    auth: () => fetchInitialToken(),
+    refresh: () => fetchNewToken(),
+    refreshTokenInterval: 50 * 60_000, // 50 min for a 60-min token
+  });
+  ```
+  If `refresh()` throws, the failure is logged at `warn` and the timer
+  keeps running for the next interval — `authFailureCloseCodes` /
+  `ws.authenticate(...)` still cover the "we missed the window" case.
+- **README "Server Compatibility" section** — proposal #7.1. Quick
+  reference table (Pusher / Reverb / Phoenix / ActionCable / custom
+  flat-fields / proprietary) with links to fully-worked
+  `frameBuilder` samples in `docs/configuration.md`.
+
+### Changed
+
+- **`frameBuilder` return-value contract** — `undefined` now means
+  "fall back to the library default for this kind" instead of "drop
+  the frame". `null` still drops. Lets users override only the kinds
+  that differ from the default without writing exhaustive switches:
+  ```ts
+  frameBuilder: (kind, p) => {
+    if (kind === 'subscribe') return { type: 'subscribe', channel: p.channel };
+    return undefined; // everything else uses the default
+  }
+  ```
+  Strictly additive — previously both `null` and `undefined` dropped,
+  so any builder that explicitly returned `undefined` to drop a frame
+  needs to switch to `null`. (Unlikely in practice — dropping by
+  returning nothing is unusual.)
+
 ## [0.14.2]
 
 ### Added
