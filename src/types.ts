@@ -194,6 +194,28 @@ export interface EventProtocol {
    * }
    */
   frameBuilder?: (kind: FrameKind, payload: FramePayload) => unknown;
+  /**
+   * Optional. If provided, `channel(name).ready` waits for an incoming
+   * frame this matcher classifies as `'ok'` before resolving. Returns:
+   *   - `'ok'`       → resolve.
+   *   - `'reject'`   → reject with a "subscribe rejected" error.
+   *   - `'pending'`  → keep watching subsequent frames.
+   *
+   * Without a matcher, `Channel.ready` resolves immediately after the
+   * subscribe frame is dispatched — appropriate for fire-and-forget
+   * servers that don't send subscribe acks.
+   *
+   * @example Phoenix `phx_reply`
+   * channelAckMatcher: (frame, channel) => {
+   *   const f = frame as { topic: string; event: string; payload: { status: 'ok' | 'error' } };
+   *   if (f.topic !== channel) return 'pending';
+   *   if (f.event !== 'phx_reply') return 'pending';
+   *   return f.payload.status === 'ok' ? 'ok' : 'reject';
+   * }
+   */
+  channelAckMatcher?: (frame: unknown, channel: string) => ChannelAckResult;
+  /** Timeout in ms for `Channel.ready` when `channelAckMatcher` is set. Default: 5000. */
+  channelAckTimeout?: number;
 }
 
 /** Push notification options. */
@@ -227,9 +249,30 @@ export interface SocketLifecycleHandlers {
   onAuthChange?: (authenticated: boolean) => void;
 }
 
+/**
+ * Result returned by `EventProtocol.channelAckMatcher` for each
+ * incoming frame while a `Channel` is awaiting its subscribe ack.
+ *
+ *   - `'ok'`      → resolve `Channel.ready`, stop watching.
+ *   - `'reject'`  → reject `Channel.ready` with a "subscribe rejected"
+ *                   error, stop watching.
+ *   - `'pending'` → keep watching for subsequent frames.
+ */
+export type ChannelAckResult = 'ok' | 'reject' | 'pending';
+
 /** Scoped channel handle for private/topic-based subscriptions. */
 export interface Channel {
   readonly name: string;
+  /**
+   * Resolves once the server has accepted the subscription. By default
+   * (no `channelAckMatcher` configured) this resolves immediately after
+   * the subscribe frame is dispatched — fire-and-forget servers don't
+   * send acks. Configure `EventProtocol.channelAckMatcher` to wait for
+   * a real ack frame; the promise then rejects on a matched
+   * "rejected" frame, on `channelAckTimeout`, or if `.leave()` is
+   * called before the ack arrives.
+   */
+  readonly ready: Promise<void>;
   on(event: string, handler: EventHandler): Unsubscribe;
   once(event: string, handler: EventHandler): Unsubscribe;
   send(event: string, data: unknown): void;

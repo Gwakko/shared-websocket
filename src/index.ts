@@ -31,4 +31,5 @@ export type {
   Codec,
   FrameKind,
   FramePayload,
+  ChannelAckResult,
 } from './types';

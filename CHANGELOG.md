@@ -4,6 +4,39 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1]
+
+### Added
+
+- **`Channel.ready: Promise<void>`** — proposal #3. Lets callers await
+  the server's subscribe ack before attaching handlers, so messages
+  that race with subscribe registration aren't lost and authz failures
+  surface as a real rejection instead of "no events ever arrived":
+  ```ts
+  const ch = ws.channel('rooms:lobby');
+  try {
+    await ch.ready;
+    ch.on('new_msg', renderMsg);
+  } catch (err) {
+    toast.error(err.message);   // rejected, timed out, or .leave()d first
+  }
+  ```
+- **`events.channelAckMatcher`** + **`events.channelAckTimeout`** —
+  configure how `Channel.ready` decides ack/reject for protocols that
+  send subscribe replies (Phoenix `phx_reply`, ActionCable
+  `confirm_subscription`, etc.). Returns `'ok'` / `'reject'` /
+  `'pending'` per incoming frame; matcher exceptions are treated as a
+  hard reject. Default timeout 5000 ms.
+- **`ChannelAckResult` type** exported from the package root.
+
+### Changed
+
+- **Default `Channel.ready` behavior is non-breaking.** Without
+  `channelAckMatcher` configured the promise resolves immediately
+  after the subscribe frame is dispatched — fire-and-forget servers
+  don't change behavior. Only opting into a matcher makes `ready`
+  block on a real ack.
+
 ## [0.14.0]
 
 ### Added

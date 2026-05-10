@@ -5,7 +5,7 @@ import { TabCoordinator } from './TabCoordinator';
 import { SharedSocket } from './SharedSocket';
 import { WorkerSocket } from './WorkerSocket';
 import { SubscriptionManager } from './SubscriptionManager';
-import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol, EventMap, Logger, Middleware, FrameKind, FramePayload } from './types';
+import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol, EventMap, Logger, Middleware, FrameKind, FramePayload, ChannelAckResult } from './types';
 
 const DEFAULT_PROTOCOL: EventProtocol = {
   eventField: 'event',
@@ -89,6 +89,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private channelRefs = new Map<string, number>();
   /** All topic subscriptions (auth and non-auth). Replayed on leader change. */
   private topics = new Set<string>();
+  /** Listeners for every raw incoming frame (post-deserialize, post-middleware). */
+  private rawFrameListeners = new Set<(raw: unknown) => void>();
 
   constructor(
     private readonly url: string,
@@ -120,6 +122,13 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
           if (msg.event.length > prefix.length && msg.event.startsWith(prefix)) {
             const subEvent = msg.event.slice(prefix.length);
             this.subs.emit(`${channelName}${CHANNEL_KEY_SEP}${subEvent}`, msg.data, msg.raw);
+          }
+        }
+
+        // Raw-frame fanout — pending Channel.ready ack matchers listen here.
+        if (this.rawFrameListeners.size > 0) {
+          for (const fn of this.rawFrameListeners) {
+            try { fn(msg.raw); } catch { /* matcher errors don't break dispatch */ }
           }
         }
       }),
@@ -620,6 +629,45 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * notifications.on('alert', (alert) => showToast(alert));
    */
   channel(name: string, options?: { auth?: boolean }): Channel {
+    // Set up the ack matcher BEFORE dispatching so we don't miss a fast
+    // server response. With no matcher configured, ready resolves
+    // synchronously on the next microtask after dispatch.
+    const matcher = this.proto.channelAckMatcher;
+    const ackTimeout = this.proto.channelAckTimeout ?? 5000;
+    let cancelReady: ((reason: Error) => void) | undefined;
+
+    const ready = matcher
+      ? new Promise<void>((resolve, reject) => {
+          let settled = false;
+          const settle = (fn: () => void) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            unsubAck();
+            fn();
+          };
+          const unsubAck = this.onRawFrame((frame) => {
+            let result: ChannelAckResult;
+            try {
+              result = matcher(frame, name);
+            } catch {
+              // matcher exceptions are treated as a hard reject
+              result = 'reject';
+            }
+            if (result === 'ok') settle(() => resolve());
+            else if (result === 'reject') settle(() => reject(new Error(`SharedWebSocket: subscribe rejected for channel "${name}"`)));
+          });
+          const timer = setTimeout(
+            () => settle(() => reject(new Error(`SharedWebSocket: subscribe ack timeout for channel "${name}"`))),
+            ackTimeout,
+          );
+          cancelReady = (err: Error) => settle(() => reject(err));
+        })
+      : Promise.resolve();
+
+    // Avoid noisy unhandled-rejection warnings if the user never awaits ready.
+    if (matcher) ready.catch(() => {});
+
     // Notify server about channel subscription
     this.dispatch('subscribe', { channel: name });
 
@@ -634,6 +682,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     const ch: Channel = {
       name,
+      ready,
       on(event: string, handler: EventHandler): Unsubscribe {
         const unsub = self.subs.on(key(event), handler);
         unsubs.push(unsub);
@@ -660,6 +709,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       leave(): void {
         if (left) return;
         left = true;
+        cancelReady?.(new Error(`SharedWebSocket: channel "${name}" left before ack`));
         self.dispatch('unsubscribe', { channel: name });
         for (const unsub of unsubs) unsub();
         unsubs.length = 0;
@@ -850,6 +900,15 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       return this.proto.frameBuilder(kind, payload);
     }
     return this.defaultFrameBuilder(kind, payload);
+  }
+
+  /**
+   * Subscribe to every raw incoming frame (post-deserialize). Used by
+   * `Channel.ready`'s ack matcher. Internal — not part of the public API.
+   */
+  private onRawFrame(fn: (raw: unknown) => void): Unsubscribe {
+    this.rawFrameListeners.add(fn);
+    return () => { this.rawFrameListeners.delete(fn); };
   }
 
   /** Legacy two-key builder — preserved as the default for back-compat. */
@@ -1123,5 +1182,6 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.authTopics.clear();
     this.channelRefs.clear();
     this.topics.clear();
+    this.rawFrameListeners.clear();
   }
 }

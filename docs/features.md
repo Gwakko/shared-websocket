@@ -197,6 +197,37 @@ const msg = useSafeSocketEvent('chat.message', ChatMessageSchema);
 
 The `channel()` method creates a scoped handle. Events are prefixed with the channel name. Server receives `$channel:join` / `$channel:leave` events.
 
+`Channel.ready` is a promise that resolves once the subscription is
+confirmed. By default it resolves immediately after the join frame is
+dispatched (fire-and-forget — appropriate when your server doesn't ack
+subscribes). When `EventProtocol.channelAckMatcher` is configured, it
+waits for an ack frame and rejects on a "rejected" frame, on
+`channelAckTimeout` (default 5s), or if `.leave()` is called first.
+
+```typescript
+// Phoenix Channels — wait for phx_reply before attaching handlers
+const ws = new SharedWebSocket(url, {
+  events: {
+    channelAckMatcher: (frame, channel) => {
+      const f = frame as { topic: string; event: string; payload: { status: 'ok' | 'error' } };
+      if (f.topic !== channel) return 'pending';
+      if (f.event !== 'phx_reply') return 'pending';
+      return f.payload.status === 'ok' ? 'ok' : 'reject';
+    },
+    channelAckTimeout: 3000,
+  },
+});
+
+const ch = ws.channel('rooms:lobby');
+try {
+  await ch.ready;
+  ch.on('new_msg', renderMsg);
+} catch (err) {
+  // authz rejection, timeout, or .leave() before ack
+  toast.error(err.message);
+}
+```
+
 ```typescript
 // Vanilla — private chat room
 await withSocket(url, { auth: () => getToken() }, async ({ ws }) => {
