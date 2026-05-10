@@ -4,6 +4,33 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1]
+
+### Added
+
+- **`authFailureCloseCodes` option** (default `[1008]`) — close codes
+  that mean "auth failed, don't retry." On a close with a matching
+  code the state goes straight to `'failed'` instead of looping with
+  expired credentials. Add `4xxx` codes here if your server uses them.
+  ```ts
+  new SharedWebSocket(url, { authFailureCloseCodes: [1008, 4001] });
+  ```
+- **Auto-resume on `ws.authenticate(token)`** — if the leader's socket
+  is in `'failed'` (e.g. auth-failure close above), `authenticate()`
+  now triggers a reconnect with the fresh creds. Followers publish a
+  conditional resume hint so healthy tabs aren't disrupted.
+
+### Fixed
+
+- **Channel/event delimiter ambiguity.** Channel handler keys were
+  built as `${name}:${event}`, which collided when channel or event
+  names contained `:` (e.g. `channel('chat').on('room:42:msg')` and
+  `channel('chat:room:42').on('msg')` resolved to the same key).
+  Storage now uses ASCII RECORD SEPARATOR (U+001E) — wire format keeps
+  `:` for server compatibility. Incoming events are routed back to
+  channel handlers via a refcounted channel-name registry with prefix
+  matching, so behavior is preserved without the collision.
+
 ## [0.13.0]
 
 ### Added
