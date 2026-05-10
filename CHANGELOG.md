@@ -4,6 +4,36 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.4]
+
+### Changed
+
+- **Debug logger output updated for the new pipeline.** Previously
+  `→ send chat.message {data}` and `← recv chat.message {data}` —
+  fine for the legacy two-key envelope but missing the new context:
+  `extras`, the actual wire `frame` after `frameBuilder`, and the full
+  `raw` envelope on receive.
+
+  New format keeps a human-readable headline (event name / channel /
+  topic) and adds a structured detail object:
+  ```
+  → send subscribe chat:room_42 { payload: {channel:'chat:room_42'}, frame: {...} }
+  → send event chat.message      { payload: {...}, frame: {...} }
+  ← recv chat.message            { data: {...}, raw: {...} }
+  → send auth-login (token redacted)
+  ✗ outgoing dropped by middleware event chat.message
+  ```
+
+### Fixed
+
+- **Auth tokens no longer appear in debug logs.** `kind: 'auth-login'`
+  send lines previously logged `payload.data` (the token) and the
+  built wire frame. Both are now suppressed and replaced with
+  `(token redacted)`. Worth flagging if you piped debug logs to a
+  log aggregator while authentication was happening — historical
+  records may contain tokens; rotate any keys captured before this
+  release.
+
 ## [0.14.3]
 
 ### Added

@@ -1026,18 +1026,43 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     if (!this.socket) return;
     let frame: unknown = this.buildFrame(kind, payload);
     if (frame === null) {
-      this.log.debug('[SharedWS] ✗ frameBuilder dropped frame', kind);
+      this.log.debug('[SharedWS] ✗ frameBuilder dropped frame', kind, this.frameLabel(kind, payload));
       return;
     }
     for (const mw of this.outgoingMiddleware) {
       frame = mw(frame);
       if (frame === null) {
-        this.log.debug('[SharedWS] ✗ outgoing dropped by middleware', kind);
+        this.log.debug('[SharedWS] ✗ outgoing dropped by middleware', kind, this.frameLabel(kind, payload));
         return;
       }
     }
-    this.log.debug('[SharedWS] → send', kind, payload);
+    // Auth frames carry a token — never log payload or wire frame.
+    if (kind === 'auth-login') {
+      this.log.debug('[SharedWS] → send', kind, '(token redacted)');
+    } else {
+      this.log.debug('[SharedWS] → send', kind, this.frameLabel(kind, payload), { payload, frame });
+    }
     this.socket.send(frame);
+  }
+
+  /**
+   * Human-readable headline for log lines — picks the most relevant field
+   * out of the structured payload so log scanners aren't reading objects:
+   *   - event       → event name
+   *   - subscribe   → channel
+   *   - topic-*     → topic
+   *   - auth-*      → '(redacted)' / ''
+   */
+  private frameLabel(kind: FrameKind, p: FramePayload): string {
+    switch (kind) {
+      case 'event':              return p.event ?? '?';
+      case 'subscribe':
+      case 'unsubscribe':        return p.channel ?? '?';
+      case 'topic-subscribe':
+      case 'topic-unsubscribe':  return p.topic ?? '?';
+      case 'auth-login':         return '(redacted)';
+      case 'auth-logout':        return '';
+    }
   }
 
   private createSocket(): SocketAdapter {
@@ -1084,7 +1109,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       for (const mw of this.incomingMiddleware) {
         data = mw(data);
         if (data === null) {
-          this.log.debug('[SharedWS] ✗ incoming dropped by middleware');
+          this.log.debug('[SharedWS] ✗ incoming dropped by middleware', { raw });
           return;
         }
       }
@@ -1099,7 +1124,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         payload = eventDeserializer(payload);
       }
 
-      this.log.debug('[SharedWS] ← recv', event, payload);
+      this.log.debug('[SharedWS] ← recv', event, { data: payload, raw: data });
       this.bus.broadcast('ws:message', { event, data: payload, raw: data });
     });
 

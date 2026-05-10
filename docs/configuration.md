@@ -873,9 +873,19 @@ new SharedWebSocket(url, { debug: true });
 // [SharedWS] init { tabId: "abc-123", url: "wss://..." }
 // [SharedWS] 👑 became leader
 // [SharedWS] ✓ connected
-// [SharedWS] → send chat.message { text: "hi" }
-// [SharedWS] ← recv chat.message { text: "hello" }
+// [SharedWS] → send subscribe chat:room_42 { payload: {channel:'chat:room_42'}, frame: {event:'$channel:join', data:{...}} }
+// [SharedWS] → send event chat.message      { payload: {event:'chat.message', data:{text:'hi'}}, frame: {event:'chat.message', data:{text:'hi'}} }
+// [SharedWS] ← recv chat.message            { data: {text:'hello'}, raw: {event:'chat.message', data:{text:'hello'}} }
+// [SharedWS] → send auth-login (token redacted)
+// [SharedWS] ✗ outgoing dropped by middleware event chat.message
 // [SharedWS] 🔄 reconnecting
+
+// Each send line shows: kind, headline (event/channel/topic), then a
+// detail object with both the structured `payload` (input you provided
+// to ws.send / channel.send / etc.) and the actual `frame` that went on
+// the wire. With a custom frameBuilder these can differ; with the
+// default builder they're equivalent except for control frames.
+// Auth frames are never logged with their token contents.
 
 // Custom logger (pino, winston, bunyan, etc.)
 import pino from 'pino';
