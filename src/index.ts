@@ -29,4 +29,6 @@ export type {
   Middleware,
   PushNotificationOptions,
   Codec,
+  FrameKind,
+  FramePayload,
 } from './types';

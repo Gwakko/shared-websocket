@@ -509,6 +509,67 @@ All fields in `events` are optional — override only what differs from defaults
 | `authLogin` | `"$auth:login"` | Event sent on `authenticate(token)` |
 | `authLogout` | `"$auth:logout"` | Event sent on `deauthenticate()` |
 | `authRevoked` | `"$auth:revoked"` | Event server sends to revoke auth |
+| `frameBuilder` | _none_ | Full control over outgoing wire shape per `FrameKind`. See below. |
+
+### `frameBuilder` — full control over the outgoing envelope
+
+The defaults above all assume a two-key envelope:
+`{ [eventField]: <name>, [dataField]: <data> }`. That works for Pusher,
+Soketi, Phoenix-with-tweaks, and most hand-rolled servers — but if your
+server has more than two top-level fields (e.g. `type` discriminator
+**plus** `channel` **plus** `event` **plus** `data`), there's no
+arrangement of `eventField`/`dataField` that produces it.
+
+`frameBuilder` is the escape hatch. It receives a typed `FrameKind` and
+a structured `FramePayload`, and returns the JSON value that goes on the
+wire. Channel join/leave, topic subscribe, auth login/logout, and user
+events all flow through it — so you write the wire shape **once** and
+every kind of frame matches.
+
+```typescript
+import { SharedWebSocket, type FrameKind, type FramePayload } from '@gwakko/shared-websocket';
+
+new SharedWebSocket(url, {
+  events: {
+    frameBuilder: (kind: FrameKind, p: FramePayload) => {
+      switch (kind) {
+        case 'subscribe':         return { type: 'subscribe',   channel: p.channel };
+        case 'unsubscribe':       return { type: 'unsubscribe', channel: p.channel };
+        case 'topic-subscribe':   return { type: 'topic.subscribe',   topic: p.topic };
+        case 'topic-unsubscribe': return { type: 'topic.unsubscribe', topic: p.topic };
+        case 'auth-login':        return { type: 'auth',   token: p.data };
+        case 'auth-logout':       return { type: 'logout' };
+        case 'event':
+          return p.channel
+            ? { type: 'event', channel: p.channel, event: p.event, data: p.data, ...p.extras }
+            : { type: 'event', event: p.event, data: p.data, ...p.extras };
+      }
+    },
+  },
+});
+
+// On the wire:
+ws.send('msg', { text: 'hi' });
+// → { type: 'event', event: 'msg', data: { text: 'hi' } }
+
+ws.channel('public.group.x').send('member_ready', { id: 1 });
+// → { type: 'event', channel: 'public.group.x', event: 'member_ready', data: { id: 1 } }
+
+ws.subscribe('orders');
+// → { type: 'topic.subscribe', topic: 'orders' }
+```
+
+`FrameKind` values: `'event'`, `'subscribe'`, `'unsubscribe'`,
+`'topic-subscribe'`, `'topic-unsubscribe'`, `'auth-login'`, `'auth-logout'`.
+`FramePayload` carries `channel?`, `topic?`, `event?`, `data?`, `extras?` —
+populated based on kind (see TypeScript types for the per-kind shape).
+
+**Heartbeats are not built via `frameBuilder`** — they ship the constant
+`events.ping` value as-is so they can run inside the Web Worker without
+crossing back to the main thread. Configure ping shape via `events.ping`.
+
+**Returning `null`/`undefined` from `frameBuilder` drops the frame** (with
+a debug log). Use it to filter or to no-op kinds your server doesn't accept.
 
 ## Middleware
 

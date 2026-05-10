@@ -4,6 +4,72 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0]
+
+### Added
+
+- **`events.frameBuilder` hook** — full control over the outgoing wire
+  shape per `FrameKind`. The default two-key `{ [eventField]:
+  <name>, [dataField]: <data> }` envelope only fits a subset of
+  servers; Pusher-extended, Reverb, Phoenix, and any custom server with
+  more than two top-level fields (`type` discriminator **plus**
+  `channel` **plus** `event` **plus** `data`) couldn't be expressed
+  before without reaching into `extras` / `serialize` / middleware as
+  workarounds. Now they're a single `frameBuilder` function that maps
+  semantic frame kinds to whatever shape the server expects:
+  ```ts
+  events: {
+    frameBuilder: (kind, p) => {
+      switch (kind) {
+        case 'subscribe': return { type: 'subscribe', channel: p.channel };
+        case 'event':     return { type: 'event', channel: p.channel, event: p.event, data: p.data };
+        // ...
+      }
+    },
+  }
+  ```
+- **`FrameKind` and `FramePayload` types** are exported from the
+  package root for users writing custom builders.
+- **Channel-aware events.** `Channel.send` now passes the channel name
+  as a structural `FramePayload.channel` field instead of
+  string-joining it onto the event name. The default builder still
+  produces `${channel}:${event}` on the wire (back-compat); custom
+  builders can put the channel in a top-level field.
+
+### Changed
+
+- **Outgoing middleware now runs on the leader for follower-routed
+  sends.** Previously middleware was applied on the originating tab
+  before publishing to `BroadcastChannel`, but the leader's bus
+  subscriber rebuilt the frame from scratch — silently dropping any
+  middleware modifications. Frames are now built and middleware runs
+  exactly once, on the tab that owns the socket. If you depended on
+  the old per-tab behavior (e.g. tab-local context like a per-tab id),
+  thread that context through the bus payload.
+- **Internal frame pipeline unified.** `send`, `subscribe`,
+  `unsubscribe`, `channel().send` / `.leave()`, `authenticate`,
+  `deauthenticate`, and the `request()` responder all route through a
+  single `dispatch(kind, payload)` → `transmit(kind, payload)`
+  pipeline. The follower→leader bus topic is renamed `ws:send` →
+  `ws:dispatch` and now carries `{ kind, payload }` instead of
+  `{ event, data, extras }`.
+- **`request()` now respects `eventField`/`dataField`.** The
+  leader-side responder previously sent literal `{ event, data }`
+  regardless of the configured field names. It now goes through
+  `transmit('event', ...)` like every other outgoing frame.
+
+### Breaking changes
+
+Runtime-compatible at the public-API level: `ws.send`, `Channel.send`,
+`subscribe`, `authenticate`, etc. all keep the same signatures and
+default wire output. Two edges to flag:
+
+1. **Anything subscribed to the internal `ws:send` BroadcastChannel
+   topic** (rare — internal plumbing) won't see traffic any more. Use
+   `ws:dispatch` if you really need to observe outgoing frames.
+2. **Outgoing middleware that relied on running per-originating-tab**
+   now runs on the leader. See "Changed" above.
+
 ## [0.13.3]
 
 ### Fixed

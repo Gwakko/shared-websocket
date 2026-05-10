@@ -53,6 +53,45 @@ export interface Logger {
 /** Middleware function — transform or inspect messages. Return null to drop. */
 export type Middleware<T = unknown> = (message: T) => T | null;
 
+/**
+ * Kinds of frames the library emits. Lets `EventProtocol.frameBuilder`
+ * take full control over the wire shape per kind — e.g. produce flat
+ * `{ type, channel, event, data }` envelopes for Pusher/Reverb/custom
+ * servers instead of the default `{ event, data }` two-key wrapper.
+ */
+export type FrameKind =
+  | 'event'              // user payload via ws.send / Channel.send
+  | 'subscribe'          // channel join
+  | 'unsubscribe'        // channel leave
+  | 'topic-subscribe'    // topic subscribe
+  | 'topic-unsubscribe'  // topic unsubscribe
+  | 'auth-login'         // authenticate(token)
+  | 'auth-logout';       // deauthenticate()
+
+/**
+ * Structured payload passed to `frameBuilder`. Fields are populated
+ * based on `kind`:
+ *
+ *   - `event`              → `{ event, data, channel?, extras? }`
+ *                            `channel` is set when sent via `Channel.send`.
+ *   - `subscribe`/`unsubscribe`        → `{ channel, extras? }`
+ *   - `topic-subscribe`/`topic-unsubscribe` → `{ topic, extras? }`
+ *   - `auth-login`         → `{ data: token, extras? }` (`data` is the raw token)
+ *   - `auth-logout`        → `{ extras? }`
+ */
+export interface FramePayload {
+  /** Channel name. Set for subscribe/unsubscribe and channel-scoped events. */
+  channel?: string;
+  /** Topic name. Set for topic-subscribe/topic-unsubscribe. */
+  topic?: string;
+  /** Bare event name (without channel prefix). Set for `kind: 'event'`. */
+  event?: string;
+  /** Payload — user data, auth token, etc. */
+  data?: unknown;
+  /** Extra top-level fields to merge into the wire envelope. */
+  extras?: Record<string, unknown>;
+}
+
 export interface SharedWebSocketOptions<TEvents extends EventMap = EventMap> {
   protocols?: string[];
   reconnect?: boolean;
@@ -132,6 +171,29 @@ export interface EventProtocol {
   authLogout: string;
   /** Event name server sends to revoke auth (default: "$auth:revoked"). */
   authRevoked: string;
+  /**
+   * Optional. Takes full control of outgoing frame shape per `FrameKind`.
+   * If unset, the default builder reproduces the legacy two-key envelope:
+   *   `{ ...extras, [eventField]: <event-name>, [dataField]: <data> }`
+   * using `channelJoin` / `channelLeave` / `topicSubscribe` / etc. for
+   * control-frame event names.
+   *
+   * @example Flat envelope (Pusher / Reverb / custom Go server)
+   * frameBuilder: (kind, p) => {
+   *   switch (kind) {
+   *     case 'subscribe':    return { type: 'subscribe',   channel: p.channel };
+   *     case 'unsubscribe':  return { type: 'unsubscribe', channel: p.channel };
+   *     case 'auth-login':   return { type: 'auth',        token: p.data };
+   *     case 'auth-logout':  return { type: 'logout' };
+   *     case 'event':
+   *       return p.channel
+   *         ? { type: 'event', channel: p.channel, event: p.event, data: p.data, ...p.extras }
+   *         : { type: 'event', event: p.event, data: p.data, ...p.extras };
+   *     default: return null;
+   *   }
+   * }
+   */
+  frameBuilder?: (kind: FrameKind, payload: FramePayload) => unknown;
 }
 
 /** Push notification options. */

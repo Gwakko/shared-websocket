@@ -5,7 +5,7 @@ import { TabCoordinator } from './TabCoordinator';
 import { SharedSocket } from './SharedSocket';
 import { WorkerSocket } from './WorkerSocket';
 import { SubscriptionManager } from './SubscriptionManager';
-import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol, EventMap, Logger, Middleware } from './types';
+import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol, EventMap, Logger, Middleware, FrameKind, FramePayload } from './types';
 
 const DEFAULT_PROTOCOL: EventProtocol = {
   eventField: 'event',
@@ -125,15 +125,13 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       }),
     );
 
-    // Leader listens for send requests from followers
+    // Leader listens for dispatch requests from followers — re-enters
+    // transmit() so frameBuilder + outgoing middleware run on the tab that
+    // actually owns the socket.
     this.cleanups.push(
-      this.bus.subscribe<{ event: string; data: unknown; extras?: Record<string, unknown> }>('ws:send', (msg) => {
+      this.bus.subscribe<{ kind: FrameKind; payload: FramePayload }>('ws:dispatch', (msg) => {
         if (this.coordinator.isLeader && this.socket) {
-          this.socket.send({
-            ...(msg.extras ?? {}),
-            [this.proto.eventField]: msg.event,
-            [this.proto.dataField]: msg.data,
-          });
+          this.transmit(msg.kind, msg.payload);
         }
       }),
     );
@@ -383,8 +381,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.log.info('[SharedWS] authenticated');
 
     // If the leader's socket gave up (e.g. auth-failure close code), the new
-    // creds should restart the connection. reAuthenticateOnReconnect resends
-    // the auth-login event from syncStore once we're connected again.
+    // creds should restart the connection. resubscribeOnConnect resends
+    // the auth-login frame from syncStore once we're connected again.
     if (this.coordinator.isLeader && this.socket && this.socket.state === 'failed') {
       this.reconnect();
       return;
@@ -395,7 +393,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       this.bus.publish('ws:authenticate-resume', undefined);
     }
 
-    this.send(this.proto.authLogin, { token });
+    this.dispatch('auth-login', { data: token });
   }
 
   /**
@@ -413,7 +411,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.authTopics.clear();
 
     this._isAuthenticated = false;
-    this.send(this.proto.authLogout, {});
+    this.dispatch('auth-logout', {});
     this.syncStore.delete('$auth:token');
     this.bus.broadcast('ws:sync', { key: '$auth:token', value: undefined });
     this.bus.broadcast('ws:lifecycle', { type: 'auth', authenticated: false });
@@ -562,45 +560,28 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   send<K extends string & keyof TEvents>(event: K, data: TEvents[K], extras?: Record<string, unknown>): void;
   send(event: string, data: unknown, extras?: Record<string, unknown>): void;
   send(event: string, data: unknown, extras?: Record<string, unknown>): void {
-    if (extras) {
-      if (this.proto.eventField in extras) {
-        throw new Error(
-          `SharedWebSocket.send: extras cannot contain reserved key "${this.proto.eventField}" (eventField). ` +
-            `Pass the event name as the first argument instead.`,
-        );
-      }
-      if (this.proto.dataField in extras) {
-        throw new Error(
-          `SharedWebSocket.send: extras cannot contain reserved key "${this.proto.dataField}" (dataField). ` +
-            `Pass the payload as the second argument instead.`,
-        );
-      }
-    }
+    this.assertExtrasReserved(extras);
 
-    // Per-event serializer transforms data before building payload
+    // Per-event serializer transforms data before the frame is built
     const eventSerializer = this.serializers.get(event);
     const serializedData = eventSerializer ? eventSerializer(data) : data;
 
-    let payload: unknown = {
-      ...(extras ?? {}),
-      [this.proto.eventField]: event,
-      [this.proto.dataField]: serializedData,
-    };
+    this.dispatch('event', { event, data: serializedData, extras });
+  }
 
-    for (const mw of this.outgoingMiddleware) {
-      payload = mw(payload);
-      if (payload === null) {
-        this.log.debug('[SharedWS] ✗ outgoing dropped by middleware', event);
-        return;
-      }
+  private assertExtrasReserved(extras: Record<string, unknown> | undefined): void {
+    if (!extras) return;
+    if (this.proto.eventField in extras) {
+      throw new Error(
+        `SharedWebSocket.send: extras cannot contain reserved key "${this.proto.eventField}" (eventField). ` +
+          `Pass the event name as the first argument instead.`,
+      );
     }
-
-    this.log.debug('[SharedWS] → send', event, data);
-
-    if (this.coordinator.isLeader && this.socket) {
-      this.socket.send(payload);
-    } else {
-      this.bus.publish('ws:send', { event, data, extras });
+    if (this.proto.dataField in extras) {
+      throw new Error(
+        `SharedWebSocket.send: extras cannot contain reserved key "${this.proto.dataField}" (dataField). ` +
+          `Pass the payload as the second argument instead.`,
+      );
     }
   }
 
@@ -640,7 +621,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    */
   channel(name: string, options?: { auth?: boolean }): Channel {
     // Notify server about channel subscription
-    this.send(this.proto.channelJoin, { channel: name });
+    this.dispatch('subscribe', { channel: name });
 
     // Track this channel for incoming-event prefix routing
     this.channelRefs.set(name, (this.channelRefs.get(name) ?? 0) + 1);
@@ -664,8 +645,14 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         return unsub;
       },
       send(event: string, data: unknown): void {
-        // Wire format keeps `:` for server compatibility
-        self.send(`${name}:${event}`, data);
+        // Channel name is passed structurally so a custom frameBuilder can
+        // emit it as a top-level wire field (Pusher/Reverb-style). The
+        // default builder joins as `${channel}:${event}` for back-compat.
+        // Per-event serializers are keyed on the joined name (legacy).
+        const joined = `${name}:${event}`;
+        const eventSerializer = self.serializers.get(joined) ?? self.serializers.get(event);
+        const serializedData = eventSerializer ? eventSerializer(data) : data;
+        self.dispatch('event', { event, data: serializedData, channel: name });
       },
       stream(event: string, signal?: AbortSignal): AsyncGenerator<unknown> {
         return self.subs.stream(key(event), signal);
@@ -673,7 +660,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       leave(): void {
         if (left) return;
         left = true;
-        self.send(self.proto.channelLeave, { channel: name });
+        self.dispatch('unsubscribe', { channel: name });
         for (const unsub of unsubs) unsub();
         unsubs.length = 0;
         if (isAuth) self.authChannels.delete(name);
@@ -702,7 +689,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * ws.subscribe(`user:${userId}:mentions`);
    */
   subscribe(topic: string, options?: { auth?: boolean }): void {
-    this.send(this.proto.topicSubscribe, { topic });
+    this.dispatch('topic-subscribe', { topic });
     this.topics.add(topic);
     if (options?.auth) {
       this.authTopics.add(topic);
@@ -715,7 +702,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * Sends topicUnsubscribe event (default: "$topic:unsubscribe").
    */
   unsubscribe(topic: string): void {
-    this.send(this.proto.topicUnsubscribe, { topic });
+    this.dispatch('topic-unsubscribe', { topic });
     this.topics.delete(topic);
     this.authTopics.delete(topic);
     this.log.debug('[SharedWS] unsubscribe topic', topic);
@@ -844,6 +831,99 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this[Symbol.dispose]();
   }
 
+  // ─── Frame Pipeline ─────────────────────────────────
+  //
+  // dispatch(kind, payload) is the single entry point for all outgoing
+  // frames (events, channel join/leave, topic sub/unsub, auth login/logout).
+  // - On the leader, it calls transmit() which builds the frame, runs
+  //   outgoing middleware, and writes to the socket.
+  // - On followers, it forwards { kind, payload } over BroadcastChannel;
+  //   the leader's bus subscriber re-enters transmit() so middleware
+  //   runs in exactly one place regardless of which tab originated.
+  //
+  // The actual wire shape is decided by frameBuilder (custom) or
+  // defaultFrameBuilder (legacy two-key { event, data } envelope).
+
+  /** Build the wire frame for a given kind. Honors custom `frameBuilder`. */
+  private buildFrame(kind: FrameKind, payload: FramePayload): unknown {
+    if (this.proto.frameBuilder) {
+      return this.proto.frameBuilder(kind, payload);
+    }
+    return this.defaultFrameBuilder(kind, payload);
+  }
+
+  /** Legacy two-key builder — preserved as the default for back-compat. */
+  private defaultFrameBuilder(kind: FrameKind, p: FramePayload): unknown {
+    let eventName: string;
+    let dataPart: unknown;
+
+    switch (kind) {
+      case 'event':
+        // Channel-scoped events join with `:` for wire compat (Pusher convention).
+        eventName = p.channel ? `${p.channel}:${p.event ?? ''}` : (p.event ?? this.proto.defaultEvent);
+        dataPart = p.data;
+        break;
+      case 'subscribe':
+        eventName = this.proto.channelJoin;
+        dataPart = { channel: p.channel };
+        break;
+      case 'unsubscribe':
+        eventName = this.proto.channelLeave;
+        dataPart = { channel: p.channel };
+        break;
+      case 'topic-subscribe':
+        eventName = this.proto.topicSubscribe;
+        dataPart = { topic: p.topic };
+        break;
+      case 'topic-unsubscribe':
+        eventName = this.proto.topicUnsubscribe;
+        dataPart = { topic: p.topic };
+        break;
+      case 'auth-login':
+        eventName = this.proto.authLogin;
+        dataPart = { token: p.data };
+        break;
+      case 'auth-logout':
+        eventName = this.proto.authLogout;
+        dataPart = {};
+        break;
+    }
+
+    return {
+      ...(p.extras ?? {}),
+      [this.proto.eventField]: eventName,
+      [this.proto.dataField]: dataPart,
+    };
+  }
+
+  /** Route a structured frame: leader transmits, followers forward via bus. */
+  private dispatch(kind: FrameKind, payload: FramePayload): void {
+    if (this.coordinator.isLeader && this.socket) {
+      this.transmit(kind, payload);
+    } else {
+      this.bus.publish('ws:dispatch', { kind, payload });
+    }
+  }
+
+  /** Build, run middleware, and write to the socket. Leader-only. */
+  private transmit(kind: FrameKind, payload: FramePayload): void {
+    if (!this.socket) return;
+    let frame: unknown = this.buildFrame(kind, payload);
+    if (frame === null || frame === undefined) {
+      this.log.debug('[SharedWS] ✗ frameBuilder returned null/undefined — dropping', kind);
+      return;
+    }
+    for (const mw of this.outgoingMiddleware) {
+      frame = mw(frame);
+      if (frame === null) {
+        this.log.debug('[SharedWS] ✗ outgoing dropped by middleware', kind);
+        return;
+      }
+    }
+    this.log.debug('[SharedWS] → send', kind, payload);
+    this.socket.send(frame);
+  }
+
   private createSocket(): SocketAdapter {
     const socketOptions = {
       protocols: this.options.protocols,
@@ -936,7 +1016,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
               resolve(res?.[this.proto.dataField] ?? response);
             }
           });
-          this.socket!.send({ event: req.event, data: req.data });
+          this.transmit('event', { event: req.event, data: req.data });
         });
       }),
     );
@@ -963,10 +1043,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     if (this._isAuthenticated) {
       const token = this.syncStore.get('$auth:token') as string | undefined;
       if (token) {
-        socket.send({
-          [this.proto.eventField]: this.proto.authLogin,
-          [this.proto.dataField]: { token },
-        });
+        this.transmit('auth-login', { data: token });
         this.log.debug('[SharedWS] re-authenticated after reconnect');
       }
     }
@@ -976,16 +1053,10 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     if (this.socket !== socket) return; // socket replaced while we were waiting
 
     for (const name of channels) {
-      socket.send({
-        [this.proto.eventField]: this.proto.channelJoin,
-        [this.proto.dataField]: { channel: name },
-      });
+      this.transmit('subscribe', { channel: name });
     }
     for (const topic of topics) {
-      socket.send({
-        [this.proto.eventField]: this.proto.topicSubscribe,
-        [this.proto.dataField]: { topic },
-      });
+      this.transmit('topic-subscribe', { topic });
     }
 
     if (channels.length || topics.length) {
