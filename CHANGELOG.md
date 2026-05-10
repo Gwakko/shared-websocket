@@ -4,6 +4,30 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.3]
+
+### Fixed
+
+- **Subscriptions now survive leader change.** Previously, when the
+  leader tab closed and a follower was promoted, the new leader opened
+  a fresh WebSocket but the server had no record of any subscriptions
+  — every tab kept its handlers but no events arrived. Same silent
+  failure on plain reconnect: only auth-required channels/topics were
+  replayed; non-auth ones were lost.
+
+  The new leader now broadcasts a short-window request over
+  `BroadcastChannel`; every surviving tab replies with its
+  `channels` and `topics`. The leader unions the responses with its
+  own state and re-issues `channelJoin` / `topicSubscribe` frames over
+  the new connection. Auth-login is still sent first so auth-gated
+  joins succeed in FIFO order.
+
+  Behavior change worth flagging: on every reconnect (not just leader
+  change) the library now spends ~150ms gathering before the first
+  outgoing frame, then re-sends `subscribe` frames the server may have
+  already known about. If your server treats duplicate subscribes as
+  errors, configure it to dedupe — most don't.
+
 ## [0.13.2]
 
 ### Changed

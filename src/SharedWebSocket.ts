@@ -83,9 +83,12 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   /**
    * Refcount of active channel subscriptions per name. Used to route
    * incoming events back to channel handlers via `${name}<RS>${event}`
-   * keys without colliding when names/events contain `:`.
+   * keys without colliding when names/events contain `:`, and as the
+   * source for cross-tab subscription replay on leader change.
    */
   private channelRefs = new Map<string, number>();
+  /** All topic subscriptions (auth and non-auth). Replayed on leader change. */
+  private topics = new Set<string>();
 
   constructor(
     private readonly url: string,
@@ -154,6 +157,17 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
           this.log.info('[SharedWS] resume requested after auth — reconnecting failed socket');
           this.socket.reconnect();
         }
+      }),
+    );
+
+    // Each tab announces its channels/topics on request. Used on leader
+    // promotion or reconnect to rebuild the server-side subscription set.
+    this.cleanups.push(
+      this.bus.subscribe<{ replyId: string }>('ws:gather-subs', (req) => {
+        this.bus.publish(`ws:subs:${req.replyId}`, {
+          channels: [...this.channelRefs.keys()],
+          topics: [...this.topics],
+        });
       }),
     );
 
@@ -689,6 +703,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    */
   subscribe(topic: string, options?: { auth?: boolean }): void {
     this.send(this.proto.topicSubscribe, { topic });
+    this.topics.add(topic);
     if (options?.auth) {
       this.authTopics.add(topic);
     }
@@ -701,6 +716,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    */
   unsubscribe(topic: string): void {
     this.send(this.proto.topicUnsubscribe, { topic });
+    this.topics.delete(topic);
     this.authTopics.delete(topic);
     this.log.debug('[SharedWS] unsubscribe topic', topic);
   }
@@ -895,7 +911,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       switch (state) {
         case 'connected':
           this.bus.broadcast('ws:lifecycle', { type: 'connect' });
-          this.reAuthenticateOnReconnect();
+          void this.resubscribeOnConnect();
           break;
         case 'closed':
           this.bus.broadcast('ws:lifecycle', { type: 'disconnect' });
@@ -928,33 +944,85 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     void this.socket.connect();
   }
 
-  private reAuthenticateOnReconnect(): void {
-    if (!this._isAuthenticated || !this.socket) return;
+  /**
+   * Re-establish all server-side state on the freshly connected leader socket:
+   *   1. auth-login (so server accepts subsequent joins on auth channels)
+   *   2. channel-join for the union of channels held by ALL surviving tabs
+   *   3. topic-subscribe for the union of topics held by ALL surviving tabs
+   *
+   * The union covers leader handover: when a follower with handlers is
+   * promoted, no tab's subscriptions get silently dropped. Frames are sent
+   * in FIFO order over the single WebSocket, so auth precedes the joins
+   * that depend on it.
+   */
+  private async resubscribeOnConnect(): Promise<void> {
+    if (!this.socket) return;
+    const socket = this.socket;
 
-    const token = this.syncStore.get('$auth:token') as string | undefined;
-    if (token) {
-      this.socket.send({
-        [this.proto.eventField]: this.proto.authLogin,
-        [this.proto.dataField]: { token },
-      });
-      this.log.debug('[SharedWS] re-authenticated after reconnect');
+    // 1. Re-authenticate first so subsequent auth-channel joins succeed.
+    if (this._isAuthenticated) {
+      const token = this.syncStore.get('$auth:token') as string | undefined;
+      if (token) {
+        socket.send({
+          [this.proto.eventField]: this.proto.authLogin,
+          [this.proto.dataField]: { token },
+        });
+        this.log.debug('[SharedWS] re-authenticated after reconnect');
+      }
     }
 
-    // Re-join auth channels
-    for (const name of this.authChannels.keys()) {
-      this.socket.send({
+    // 2/3. Gather subscriptions from all surviving tabs (including self).
+    const { channels, topics } = await this.gatherSubscriptions();
+    if (this.socket !== socket) return; // socket replaced while we were waiting
+
+    for (const name of channels) {
+      socket.send({
         [this.proto.eventField]: this.proto.channelJoin,
         [this.proto.dataField]: { channel: name },
       });
     }
-
-    // Re-subscribe auth topics
-    for (const topic of this.authTopics) {
-      this.socket.send({
+    for (const topic of topics) {
+      socket.send({
         [this.proto.eventField]: this.proto.topicSubscribe,
         [this.proto.dataField]: { topic },
       });
     }
+
+    if (channels.length || topics.length) {
+      this.log.info('[SharedWS] replayed subscriptions', {
+        channels: channels.length,
+        topics: topics.length,
+      });
+    }
+  }
+
+  /**
+   * Best-effort cross-tab gather. Broadcasts a request and collects responses
+   * for a short window. Times out gracefully — late responses are dropped.
+   * The leader's own subs are seeded into the result to avoid relying on
+   * BroadcastChannel echo to self.
+   */
+  private gatherSubscriptions(timeoutMs = 150): Promise<{ channels: string[]; topics: string[] }> {
+    const channels = new Set<string>(this.channelRefs.keys());
+    const topics = new Set<string>(this.topics);
+    const replyId = generateId();
+
+    return new Promise((resolve) => {
+      const unsub = this.bus.subscribe<{ channels: string[]; topics: string[] }>(
+        `ws:subs:${replyId}`,
+        (msg) => {
+          for (const c of msg.channels) channels.add(c);
+          for (const t of msg.topics) topics.add(t);
+        },
+      );
+
+      this.bus.publish('ws:gather-subs', { replyId });
+
+      setTimeout(() => {
+        unsub();
+        resolve({ channels: [...channels], topics: [...topics] });
+      }, timeoutMs);
+    });
   }
 
   private handleLoseLeadership(): void {
@@ -983,5 +1051,6 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.authChannels.clear();
     this.authTopics.clear();
     this.channelRefs.clear();
+    this.topics.clear();
   }
 }
