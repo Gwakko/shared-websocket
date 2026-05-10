@@ -69,6 +69,222 @@ const msg = useSocketEvent<Events['chat.message']>('chat.message');
 // msg: { text, userId, timestamp } | undefined
 ```
 
+### Raw envelope access — `(data, raw) => …`
+
+Every event handler receives `(data, raw)` where `raw` is the full
+deserialized envelope. Use it to read top-level fields outside
+`dataField` — `id`, `kind`, `channel`, `type`, etc. — for protocols
+that put routing metadata at the top level of the wire frame:
+
+```json
+{ "type": "msg", "id": 4711, "kind": "order.ready_for_pickup", "data": {...} }
+```
+
+**Vanilla:**
+
+```typescript
+ws.on('msg', (data, raw) => {
+  const r = raw as { id: number; kind: string };
+  console.log(r.id, r.kind);
+});
+```
+
+**React** (works on `useSocketEvent` callback form, `useSocketStream`,
+and `useSocketCallback`):
+
+```tsx
+import { useSocketCallback } from '@gwakko/shared-websocket/react';
+
+useSocketCallback<NotifData>('msg', (data, raw) => {
+  const meta = raw as { id: number; kind: string };
+  if (meta.kind === 'order.ready_for_pickup') {
+    showToast(`Order #${meta.id} ready`);
+  }
+});
+```
+
+**Vue:**
+
+```vue
+<script setup lang="ts">
+import { useSocketCallback } from '@gwakko/shared-websocket/vue';
+
+useSocketCallback<NotifData>('msg', (data, raw) => {
+  const meta = raw as { id: number; kind: string };
+  if (meta.kind === 'order.ready_for_pickup') {
+    showToast(`Order #${meta.id} ready`);
+  }
+});
+</script>
+```
+
+The reactive return forms (`useSocketEvent('msg')` without callback) only
+expose `data` for backwards compatibility — use the callback form when
+you need `raw`.
+
+### Extra top-level fields per send — `ws.send(event, data, extras)`
+
+Optional third argument adds top-level keys to the wire envelope —
+useful when a single call needs metadata outside the standard `event` /
+`data` keys (request id, channel discriminator, server hint, etc.).
+Throws if `extras` collides with the configured `eventField`/`dataField`.
+
+**Vanilla:**
+
+```typescript
+ws.send('group.member_ready',
+  { member_id: 'abc', ready: true },
+  { type: 'event', channel: 'public.group.x' },
+);
+// → { type: 'event', channel: 'public.group.x', event: 'group.member_ready', data: { member_id: 'abc', ready: true } }
+```
+
+**React** — pull `ws` from context:
+
+```tsx
+import { useSharedWebSocket } from '@gwakko/shared-websocket/react';
+
+function ReadyButton({ groupId }: { groupId: string }) {
+  const ws = useSharedWebSocket();
+  return (
+    <button onClick={() =>
+      ws.send('group.member_ready',
+        { member_id: currentUserId, ready: true },
+        { type: 'event', channel: `public.group.${groupId}` },
+      )
+    }>
+      Ready
+    </button>
+  );
+}
+```
+
+**Vue:**
+
+```vue
+<script setup lang="ts">
+import { useSharedWebSocket } from '@gwakko/shared-websocket/vue';
+
+const ws = useSharedWebSocket();
+const props = defineProps<{ groupId: string }>();
+
+function markReady() {
+  ws.send('group.member_ready',
+    { member_id: currentUserId, ready: true },
+    { type: 'event', channel: `public.group.${props.groupId}` },
+  );
+}
+</script>
+
+<template>
+  <button @click="markReady">Ready</button>
+</template>
+```
+
+For protocols where _every_ frame needs the same top-level shape, prefer
+[`frameBuilder`](#custom-server-integration-with-framebuilder) below —
+extras is for per-call additions, frameBuilder is for whole-protocol shape.
+
+## Custom Server Integration with `frameBuilder`
+
+`frameBuilder` (in `events.frameBuilder`) takes full control of the
+outgoing wire shape per `FrameKind`. The library calls it for every
+control frame (subscribe, unsubscribe, auth) and every user `send`, so
+the wire format is defined in one place. Subscribe-acks are handled by
+`channelAckMatcher` so `await channel.ready` rejects on authz failures
+instead of silently never receiving events.
+
+See [docs/configuration.md → Server compatibility samples](configuration.md#server-compatibility-samples)
+for fully-worked configurations (Pusher, ActionCable, Phoenix, custom
+flat-fields). The framework-specific bit is just _where_ you pass the
+config — Provider props (React) or plugin args (Vue):
+
+**Vanilla** — `new SharedWebSocket(url, options)`:
+
+```typescript
+import { SharedWebSocket, type FrameKind, type FramePayload } from '@gwakko/shared-websocket';
+
+const ws = new SharedWebSocket('wss://api.example.com/ws', {
+  events: {
+    frameBuilder: (kind: FrameKind, p: FramePayload) => {
+      switch (kind) {
+        case 'subscribe':   return { type: 'subscribe',   channel: p.channel };
+        case 'unsubscribe': return { type: 'unsubscribe', channel: p.channel };
+        case 'auth-login':  return { type: 'auth',        token: p.data };
+        case 'event':
+          return p.channel
+            ? { type: 'event', channel: p.channel, event: p.event, data: p.data }
+            : { type: 'event', event: p.event, data: p.data };
+        default:            return undefined; // library default for unhandled kinds
+      }
+    },
+    channelAckMatcher: (frame, channel) => {
+      const f = frame as { type: string; channel?: string; status?: string };
+      if (f.type !== 'subscribed' || f.channel !== channel) return 'pending';
+      return f.status === 'ok' ? 'ok' : 'reject';
+    },
+  },
+});
+await ws.connect();
+```
+
+**React** — same options via `<SharedWebSocketProvider>`:
+
+```tsx
+import { SharedWebSocketProvider } from '@gwakko/shared-websocket/react';
+import type { FrameKind, FramePayload } from '@gwakko/shared-websocket';
+
+const wsOptions = {
+  events: {
+    frameBuilder: (kind: FrameKind, p: FramePayload) => {
+      switch (kind) {
+        case 'subscribe':   return { type: 'subscribe',   channel: p.channel };
+        case 'event':
+          return { type: 'event', channel: p.channel, event: p.event, data: p.data };
+        default:            return undefined;
+      }
+    },
+  },
+};
+
+export function App() {
+  return (
+    <SharedWebSocketProvider url="wss://api.example.com/ws" options={wsOptions}>
+      <Routes />
+    </SharedWebSocketProvider>
+  );
+}
+```
+
+**Vue** — same options to `createSharedWebSocketPlugin`:
+
+```typescript
+// main.ts
+import { createApp } from 'vue';
+import { createSharedWebSocketPlugin } from '@gwakko/shared-websocket/vue';
+import type { FrameKind, FramePayload } from '@gwakko/shared-websocket';
+import App from './App.vue';
+
+const app = createApp(App);
+app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
+  events: {
+    frameBuilder: (kind: FrameKind, p: FramePayload) => {
+      switch (kind) {
+        case 'subscribe':   return { type: 'subscribe',   channel: p.channel };
+        case 'event':
+          return { type: 'event', channel: p.channel, event: p.event, data: p.data };
+        default:            return undefined;
+      }
+    },
+  },
+}));
+app.mount('#app');
+```
+
+Once the builder is in place, every flavor uses the same APIs (`ws.send`,
+`ws.channel(...).on/.send`, `channel.ready`) — the wire shape is invisible
+to consuming code.
+
 ### Type narrowing for untyped events
 
 When working without EventMap, data is `unknown`. Use narrowing:
@@ -226,6 +442,58 @@ try {
   // authz rejection, timeout, or .leave() before ack
   toast.error(err.message);
 }
+```
+
+**React — gate handler attach on `ready`:**
+
+```tsx
+import { useChannel, useSharedWebSocket } from '@gwakko/shared-websocket/react';
+import { useEffect, useState } from 'react';
+
+function Room({ id }: { id: string }) {
+  const chat = useChannel(`rooms:${id}`);
+  const [status, setStatus] = useState<'pending' | 'ok' | 'reject'>('pending');
+
+  useEffect(() => {
+    let alive = true;
+    chat.ready
+      .then(() => alive && setStatus('ok'))
+      .catch(() => alive && setStatus('reject'));
+    return () => { alive = false; };
+  }, [chat]);
+
+  if (status === 'pending') return <Spinner />;
+  if (status === 'reject') return <p>You can't join this room.</p>;
+  return <ChatBody roomId={id} />;  // free to attach handlers — server confirmed
+}
+```
+
+**Vue — same pattern with `ref` + `onMounted`:**
+
+```vue
+<script setup lang="ts">
+import { useChannel } from '@gwakko/shared-websocket/vue';
+import { ref, onMounted } from 'vue';
+
+const props = defineProps<{ id: string }>();
+const chat = useChannel(`rooms:${props.id}`);
+const status = ref<'pending' | 'ok' | 'reject'>('pending');
+
+onMounted(async () => {
+  try {
+    await chat.ready;
+    status.value = 'ok';
+  } catch {
+    status.value = 'reject';
+  }
+});
+</script>
+
+<template>
+  <Spinner v-if="status === 'pending'" />
+  <p v-else-if="status === 'reject'">You can't join this room.</p>
+  <ChatBody v-else :room-id="id" />
+</template>
 ```
 
 ```typescript
@@ -935,6 +1203,62 @@ case 'file.upload.complete': {
 ## Runtime Authentication
 
 WebSocket is often a **global instance** — connected before knowing if the user is logged in. Runtime auth lets you authenticate/deauthenticate on an existing connection without reconnecting.
+
+### Pre-emptive token refresh — `refresh` + `refreshTokenInterval`
+
+For long-running tabs where the access token expires mid-session, pass
+a `refresh` callback. The library runs a leader-only timer that calls
+`refresh()` and feeds the new token through `authenticate()` so the
+server sees the rotated credentials before the old one expires.
+
+**Vanilla:**
+
+```typescript
+new SharedWebSocket('wss://api.example.com/ws', {
+  auth:    () => fetchInitialToken(),
+  refresh: () => fetchNewToken(),       // called on a timer
+  refreshTokenInterval: 50 * 60_000,    // 50 min for a 60-min TTL token
+});
+```
+
+**React:**
+
+```tsx
+<SharedWebSocketProvider
+  url="wss://api.example.com/ws"
+  options={{
+    auth:    () => fetchInitialToken(),
+    refresh: async () => {
+      const r = await fetch('/api/refresh', { method: 'POST', credentials: 'include' });
+      if (!r.ok) throw new Error('refresh failed');
+      return (await r.json()).token;
+    },
+    refreshTokenInterval: 50 * 60_000,
+  }}
+>
+  <App />
+</SharedWebSocketProvider>
+```
+
+**Vue:**
+
+```typescript
+// main.ts
+app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
+  auth:    () => fetchInitialToken(),
+  refresh: async () => {
+    const r = await fetch('/api/refresh', { method: 'POST', credentials: 'include' });
+    if (!r.ok) throw new Error('refresh failed');
+    return (await r.json()).token;
+  },
+  refreshTokenInterval: 50 * 60_000,
+}));
+```
+
+Only the leader tab fires the timer (no thundering herd from N tabs).
+If the callback throws, the failure is logged and the timer keeps running
+— `authFailureCloseCodes` plus `ws.authenticate(...)` still cover the
+"missed the window" case.
 
 ### What happens on each action
 
