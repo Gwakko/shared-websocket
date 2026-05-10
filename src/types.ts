@@ -119,6 +119,19 @@ export interface SharedWebSocketOptions<TEvents extends EventMap = EventMap> {
   authToken?: string;
   /** Query parameter name for the token (default: "token"). */
   authParam?: string;
+  /**
+   * Max number of follower-routed dispatches each tab buffers locally for
+   * replay across leader handover. When the leader dies between receiving
+   * a follower's dispatch and writing it to the socket, the new leader
+   * gathers pending entries from all tabs and replays them. Cap protects
+   * memory; oldest entries are dropped on overflow. Set to `0` to disable
+   * the buffer entirely. Default: 100.
+   *
+   * Note: the replay is at-least-once — a leader that dies AFTER socket
+   * write but BEFORE broadcasting "flushed" will cause a duplicate. Make
+   * server-side handlers idempotent if duplicates would matter.
+   */
+  outboundBufferSize?: number;
   /** Run WebSocket inside a Web Worker (offloads JSON parsing, heartbeat from main thread). */
   useWorker?: boolean;
   /** Custom worker URL (if useWorker is true and you want to provide your own worker file). */

@@ -185,6 +185,32 @@ new SharedWebSocket('wss://api.example.com/ws', {
 | `reconnect` | `boolean` | `true` | Enable auto-reconnect |
 | `reconnectMaxDelay` | `number` | `30000` | Max backoff in ms (caps exponential growth) |
 | `reconnectMaxRetries` | `number` | `Infinity` | Max attempts before giving up |
+| `authFailureCloseCodes` | `number[]` | `[1008]` | Close codes that mean "auth failed; stop retry" |
+| `outboundBufferSize` | `number` | `100` | Per-tab follower-dispatch buffer for leader-handover replay |
+
+### Outbound buffer & leader handover
+
+When a follower tab calls `ws.send(...)` (or any other dispatch), the
+frame is published over `BroadcastChannel` and the leader writes it to
+the socket. If the leader tab dies between receiving the dispatch and
+writing it, the frame would normally be lost.
+
+The library buffers each follower-originated dispatch locally with a
+unique id. The leader broadcasts a `flushed` signal once it processes
+the dispatch, and the originator drops the entry. On leader change,
+the new leader gathers still-pending entries from every surviving tab
+and replays them over the fresh socket — so subscriptions (replayed
+first, see #5b) and in-flight sends both survive promotion.
+
+**Caveats:**
+- The buffer is capped (`outboundBufferSize`, default 100). When full,
+  the oldest entry is dropped. Set to `0` to disable buffering entirely.
+- Replay is **at-least-once**. A leader that dies after `socket.send`
+  but before broadcasting `flushed` causes the new leader to re-send.
+  Make server-side handlers idempotent (e.g. dedupe by message id) if
+  duplicate effects would matter.
+- Leader-originated sends are not buffered — when a leader dies its
+  own state is gone anyway; nothing to replay to.
 
 ## Custom Serialization
 

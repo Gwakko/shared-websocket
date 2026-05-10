@@ -4,6 +4,30 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2]
+
+### Added
+
+- **Outbound dispatch buffer with leader-handover replay** — proposal
+  #5a. When a follower's send was lost between BroadcastChannel
+  receive and the leader's `socket.send` (e.g. the leader tab closed
+  mid-handover), the frame previously vanished. Each tab now keeps its
+  follower-routed dispatches in a local `pending` map keyed by id. The
+  leader broadcasts `ws:dispatch-flushed` after processing; the
+  originator drops the entry. On leader promotion, the new leader
+  gathers pending entries from every surviving tab and replays them
+  on the fresh socket after subscriptions are restored.
+- **`outboundBufferSize` option** (default `100`, set to `0` to
+  disable). Caps memory; oldest entries drop on overflow.
+
+### Changed
+
+- Replay is **at-least-once**: a leader that dies after `socket.send`
+  but before broadcasting `flushed` will cause a duplicate when the
+  next leader replays. Make server-side handlers idempotent (e.g.
+  dedupe by message id) if duplicate effects would matter. Documented
+  in `docs/configuration.md` "Outbound buffer & leader handover".
+
 ## [0.14.1]
 
 ### Added

@@ -91,6 +91,14 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private topics = new Set<string>();
   /** Listeners for every raw incoming frame (post-deserialize, post-middleware). */
   private rawFrameListeners = new Set<(raw: unknown) => void>();
+  /**
+   * Local outbound buffer of follower-originated dispatches awaiting flush
+   * confirmation from the leader. Drained when the leader broadcasts
+   * `ws:dispatch-flushed` for the entry's id; replayed by the next leader
+   * after gathering across surviving tabs. Insertion order preserved
+   * (Map) so we drop oldest on overflow.
+   */
+  private pendingOutbound = new Map<string, { id: string; kind: FrameKind; payload: FramePayload; enqueuedAt: number }>();
 
   constructor(
     private readonly url: string,
@@ -138,10 +146,34 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     // transmit() so frameBuilder + outgoing middleware run on the tab that
     // actually owns the socket.
     this.cleanups.push(
-      this.bus.subscribe<{ kind: FrameKind; payload: FramePayload }>('ws:dispatch', (msg) => {
+      this.bus.subscribe<{ kind: FrameKind; payload: FramePayload; id?: string }>('ws:dispatch', (msg) => {
         if (this.coordinator.isLeader && this.socket) {
           this.transmit(msg.kind, msg.payload);
+          // Tell the originator to drop the entry from its pending buffer.
+          // Always flush — even when transmit was a no-op (middleware drop,
+          // frameBuilder returned null) — there's no point retrying a
+          // permanently-dropped frame.
+          if (msg.id) this.bus.publish('ws:dispatch-flushed', { id: msg.id });
         }
+      }),
+    );
+
+    // Originator tabs drop their entry once the leader confirms it processed
+    // the dispatch (or, on leader change, the new leader confirms replay).
+    this.cleanups.push(
+      this.bus.subscribe<{ id: string }>('ws:dispatch-flushed', (msg) => {
+        this.pendingOutbound.delete(msg.id);
+      }),
+    );
+
+    // New-leader gather request — every tab announces its still-pending
+    // dispatches so the new leader can replay them on the fresh socket.
+    this.cleanups.push(
+      this.bus.subscribe<{ replyId: string }>('ws:gather-pending', (req) => {
+        if (this.pendingOutbound.size === 0) return;
+        this.bus.publish(`ws:pending:${req.replyId}`, {
+          entries: [...this.pendingOutbound.values()],
+        });
       }),
     );
 
@@ -959,9 +991,24 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private dispatch(kind: FrameKind, payload: FramePayload): void {
     if (this.coordinator.isLeader && this.socket) {
       this.transmit(kind, payload);
-    } else {
-      this.bus.publish('ws:dispatch', { kind, payload });
+      return;
     }
+    // Follower path — buffer locally so the next leader can replay if the
+    // current leader dies before the dispatch reaches the socket.
+    const id = generateId();
+    this.enqueuePending(id, kind, payload);
+    this.bus.publish('ws:dispatch', { id, kind, payload });
+  }
+
+  private enqueuePending(id: string, kind: FrameKind, payload: FramePayload): void {
+    const max = this.options.outboundBufferSize ?? 100;
+    if (max <= 0) return;
+    if (this.pendingOutbound.size >= max) {
+      // Drop oldest — Map iteration order = insertion order.
+      const oldestKey = this.pendingOutbound.keys().next().value;
+      if (oldestKey !== undefined) this.pendingOutbound.delete(oldestKey);
+    }
+    this.pendingOutbound.set(id, { id, kind, payload, enqueuedAt: Date.now() });
   }
 
   /** Build, run middleware, and write to the socket. Leader-only. */
@@ -1050,7 +1097,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       switch (state) {
         case 'connected':
           this.bus.broadcast('ws:lifecycle', { type: 'connect' });
-          void this.resubscribeOnConnect();
+          void this.onConnected();
           break;
         case 'closed':
           this.bus.broadcast('ws:lifecycle', { type: 'disconnect' });
@@ -1094,6 +1141,17 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * in FIFO order over the single WebSocket, so auth precedes the joins
    * that depend on it.
    */
+  /**
+   * Orchestrate post-connect recovery: replay subscriptions first (so the
+   * server is ready to route events for any channels we still care about),
+   * then drain follower-pending dispatches that didn't reach the previous
+   * leader's socket.
+   */
+  private async onConnected(): Promise<void> {
+    await this.resubscribeOnConnect();
+    await this.replayPendingDispatches();
+  }
+
   private async resubscribeOnConnect(): Promise<void> {
     if (!this.socket) return;
     const socket = this.socket;
@@ -1124,6 +1182,60 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         topics: topics.length,
       });
     }
+  }
+
+  /**
+   * Replay buffered follower dispatches over the freshly connected socket.
+   * Gathers from all tabs (including this one), de-dups by id, transmits,
+   * then signals each originator to drop its local entry. Drops own-tab
+   * entries after transmission since `bus.publish` doesn't echo to self.
+   */
+  private async replayPendingDispatches(): Promise<void> {
+    if (!this.socket) return;
+    const socket = this.socket;
+    const entries = await this.gatherPendingDispatches();
+    if (this.socket !== socket) return; // socket replaced while waiting
+    if (entries.length === 0) return;
+
+    let sent = 0;
+    for (const e of entries) {
+      this.transmit(e.kind, e.payload);
+      // Remove from own pending (publish doesn't echo to self) and tell
+      // any other tab that originated the same id to drop it as well.
+      this.pendingOutbound.delete(e.id);
+      this.bus.publish('ws:dispatch-flushed', { id: e.id });
+      sent++;
+    }
+    this.log.info('[SharedWS] replayed pending dispatches', { count: sent });
+  }
+
+  /**
+   * Cross-tab pending-dispatch gather. Same shape as `gatherSubscriptions`
+   * — broadcasts a one-shot request, collects for a short window, dedups
+   * by id (so multiple tabs holding the same id don't double-replay).
+   */
+  private gatherPendingDispatches(timeoutMs = 100): Promise<Array<{ id: string; kind: FrameKind; payload: FramePayload }>> {
+    const seen = new Map<string, { id: string; kind: FrameKind; payload: FramePayload }>();
+    for (const e of this.pendingOutbound.values()) {
+      seen.set(e.id, { id: e.id, kind: e.kind, payload: e.payload });
+    }
+    const replyId = generateId();
+
+    return new Promise((resolve) => {
+      const unsub = this.bus.subscribe<{ entries: Array<{ id: string; kind: FrameKind; payload: FramePayload; enqueuedAt: number }> }>(
+        `ws:pending:${replyId}`,
+        (msg) => {
+          for (const e of msg.entries) {
+            if (!seen.has(e.id)) seen.set(e.id, { id: e.id, kind: e.kind, payload: e.payload });
+          }
+        },
+      );
+      this.bus.publish('ws:gather-pending', { replyId });
+      setTimeout(() => {
+        unsub();
+        resolve([...seen.values()]);
+      }, timeoutMs);
+    });
   }
 
   /**
@@ -1183,5 +1295,6 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.channelRefs.clear();
     this.topics.clear();
     this.rawFrameListeners.clear();
+    this.pendingOutbound.clear();
   }
 }
