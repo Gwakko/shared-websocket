@@ -46,11 +46,27 @@ export class WorkerSocket implements Disposable {
     return this._state;
   }
 
+  private setState(s: SocketState): void {
+    this._state = s;
+    for (const fn of this.onStateChangeFns) fn(s);
+  }
+
   async connect(): Promise<void> {
     // Resolve auth token before sending to worker (functions can't cross worker boundary)
     let authToken: string | undefined;
     if (this.options.auth) {
-      authToken = await this.options.auth();
+      try {
+        authToken = await this.options.auth();
+      } catch {
+        // auth() threw — pause reconnect until user provides fresh creds.
+        this.setState('failed');
+        return;
+      }
+      if (!authToken) {
+        // Configured auth callback returned nothing — same fail-closed behavior.
+        this.setState('failed');
+        return;
+      }
     } else if (this.options.authToken) {
       authToken = this.options.authToken;
     }

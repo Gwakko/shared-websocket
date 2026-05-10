@@ -80,7 +80,15 @@ export class SharedSocket implements Disposable {
 
     this.setState('connecting');
 
-    const connectUrl = await this.buildUrl();
+    let connectUrl: string;
+    try {
+      connectUrl = await this.buildUrl();
+    } catch {
+      // auth() threw or returned no token — pause reconnect until user
+      // provides fresh creds via ws.authenticate(token) or ws.reconnect().
+      this.setState('failed');
+      return;
+    }
     this.ws = new WebSocket(connectUrl, this.opts.protocols);
 
     this.ws.onopen = () => {
@@ -238,7 +246,14 @@ export class SharedSocket implements Disposable {
     // Resolve token: callback > static > none
     let token: string | undefined;
     if (this.opts.auth) {
+      // If the auth callback throws, let it propagate — connect() catches and
+      // pauses reconnect until the user supplies fresh creds.
       token = await this.opts.auth();
+      if (!token) {
+        // Configured auth callback returned no token. Treat as a fatal auth
+        // condition (don't silently connect without credentials).
+        throw new Error('SharedSocket: auth() returned no token');
+      }
     } else if (this.opts.authToken) {
       token = this.opts.authToken;
     }

@@ -4,6 +4,32 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.2]
+
+### Changed
+
+- **`auth()` callback failures pause reconnect.** If the configured
+  `auth: () => string | Promise<string>` throws or resolves to an empty
+  value, the socket goes to `'failed'` instead of either crashing
+  unhandled (throw) or silently connecting without a token (empty).
+  Same recovery path as `authFailureCloseCodes`: call
+  `ws.authenticate(freshToken)` (auto-resumes) or `ws.reconnect()`.
+
+  Behavior change: previously an empty token from `auth()` produced a
+  URL without the auth query param, which most servers rejected — and
+  the lib then looped reconnecting with the same empty token. The new
+  behavior fails fast.
+
+### Docs
+
+- README "Browser Support" — `BroadcastChannel` is required with no
+  fallback; iOS Safari < 15.4, SSR, jsdom, and webview caveats.
+- `docs/features.md` Stream — explicit `AbortController` recipe for
+  `ws.stream()` outside `withSocket`, with leak-vs-clean React example.
+- `docs/configuration.md` Logger — table of what level the library
+  emits at, so consumers can wire Sentry/alerting safely. The library
+  never calls `error` itself.
+
 ## [0.13.1]
 
 ### Added
