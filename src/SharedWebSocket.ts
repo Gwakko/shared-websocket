@@ -1003,10 +1003,16 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       this.transmit(kind, payload);
       return;
     }
-    // Follower path — buffer locally so the next leader can replay if the
-    // current leader dies before the dispatch reaches the socket.
+    // Follower path — route to the leader's socket via the bus.
     const id = generateId();
-    this.enqueuePending(id, kind, payload);
+    // Only `event` dispatches need the local replay buffer. Channel /
+    // topic / auth frames are already tracked (channelRefs, topicRefs,
+    // the auth token) and re-sent by resubscribeOnConnect() on the next
+    // connect — buffering them here too makes onConnected() replay them
+    // twice, emitting a duplicate subscribe frame.
+    if (kind === 'event') {
+      this.enqueuePending(id, kind, payload);
+    }
     this.bus.publish('ws:dispatch', { id, kind, payload });
   }
 

@@ -4,6 +4,30 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.6]
+
+### Fixed
+
+- **Duplicate `subscribe` frame on the first connect.** `dispatch()`'s
+  follower path buffered *every* frame kind into `pendingOutbound`, the
+  local replay buffer drained by `replayPendingDispatches()` on connect.
+  But channel/topic/auth frames are also tracked separately
+  (`channelRefs`, `topicRefs`, the auth token) and re-sent by
+  `resubscribeOnConnect()`. Since `onConnected()` runs both, a channel
+  joined before the socket was connected — the common case, `channel()`
+  is called at component mount and the socket opens a moment later —
+  was sent to the server **twice**: once from `resubscribeOnConnect()`,
+  once from `replayPendingDispatches()`.
+
+  Harmless on an idempotent server, but a wasteful duplicate `subscribe`
+  (and `topic-subscribe`) on the wire for every channel.
+
+  The fix limits the `pendingOutbound` replay buffer to `event`
+  dispatches — the only kind not otherwise re-established on connect.
+  Channel / topic / auth frames now flow through `resubscribeOnConnect()`
+  alone. Follower→leader routing (`bus.publish('ws:dispatch')`) and
+  `event` replay across leader handover are unchanged.
+
 ## [0.14.5]
 
 ### Fixed
