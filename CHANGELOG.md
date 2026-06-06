@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the god object and making those paths independently testable. No behavior or
   API change — the full suite passes unchanged.
 
+- **Centralized magic values in `src/constants.ts`.** All internal
+  `BroadcastChannel` topic names (`coord:*`, `ws:*`), `SubscriptionManager`
+  lifecycle keys (`$lifecycle:*`), the auth-token sync key, the bus channel
+  name, and the tuning defaults (election/heartbeat/leader timeouts, reconnect
+  backoff/delay, buffer sizes, gather windows, request/ack timeouts) now live
+  as named constants instead of scattered literals. Internal only — the string
+  values are unchanged, so cross-tab behavior is identical.
+
 - **Test harness.** Added a vitest suite (`test/`) with in-memory
   `BroadcastChannel` and `WebSocket` mocks. Covers leader election, the
   split-brain tie-break, health-verified takeover, the `heartbeatTimeout`

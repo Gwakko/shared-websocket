@@ -1,6 +1,7 @@
 import './utils/disposable';
 import { MessageBus } from './MessageBus';
 import { generateId } from './utils/id';
+import { COORD, COORD_DEFAULTS, coordPongReply } from './constants';
 import type { Unsubscribe } from './types';
 
 interface CoordinatorOptions {
@@ -50,19 +51,19 @@ export class TabCoordinator implements Disposable {
     private readonly tabId: string,
     options: CoordinatorOptions = {},
   ) {
-    this.electionTimeout = options.electionTimeout ?? 200;
-    this.heartbeatInterval = options.heartbeatInterval ?? 2000;
-    this.leaderTimeout = options.leaderTimeout ?? 5000;
-    this.leaderPingTimeout = options.leaderPingTimeout ?? 1500;
+    this.electionTimeout = options.electionTimeout ?? COORD_DEFAULTS.ELECTION_TIMEOUT;
+    this.heartbeatInterval = options.heartbeatInterval ?? COORD_DEFAULTS.HEARTBEAT_INTERVAL;
+    this.leaderTimeout = options.leaderTimeout ?? COORD_DEFAULTS.LEADER_TIMEOUT;
+    this.leaderPingTimeout = options.leaderPingTimeout ?? COORD_DEFAULTS.LEADER_PING_TIMEOUT;
 
     // Listen for election requests. If we're already leader, reject so the
     // candidate backs off. If we're mid-election ourselves, the candidate
     // with the smaller tabId wins and we yield — a deterministic tie-break
     // that prevents two simultaneous electors from both becoming leader.
     this.cleanups.push(
-      this.bus.subscribe<{ tabId: string }>('coord:election', (msg) => {
+      this.bus.subscribe<{ tabId: string }>(COORD.ELECTION, (msg) => {
         if (this._isLeader) {
-          this.bus.publish('coord:reject', { tabId: this.tabId });
+          this.bus.publish(COORD.REJECT, { tabId: this.tabId });
         } else if (this.electionAbort && msg.tabId < this.tabId) {
           this.electionAbort();
         }
@@ -71,14 +72,14 @@ export class TabCoordinator implements Disposable {
 
     // Listen for heartbeats
     this.cleanups.push(
-      this.bus.subscribe<{ tabId: string }>('coord:heartbeat', () => {
+      this.bus.subscribe<{ tabId: string }>(COORD.HEARTBEAT, () => {
         this.lastHeartbeat = Date.now();
       }),
     );
 
     // Listen for abdication
     this.cleanups.push(
-      this.bus.subscribe('coord:abdicate', () => {
+      this.bus.subscribe(COORD.ABDICATE, () => {
         if (!this._isLeader && !this.disposed) {
           this.elect();
         }
@@ -89,9 +90,9 @@ export class TabCoordinator implements Disposable {
     // actually alive. A zombie leader (timer-throttled tab, dead socket)
     // stays silent so the asking tab knows to take over.
     this.cleanups.push(
-      this.bus.subscribe<{ replyId: string }>('coord:ping', (req) => {
+      this.bus.subscribe<{ replyId: string }>(COORD.PING, (req) => {
         if (this._isLeader && !this.disposed && (this.healthCheck?.() ?? true)) {
-          this.bus.publish(`coord:pong:${req.replyId}`, { tabId: this.tabId });
+          this.bus.publish(coordPongReply(req.replyId), { tabId: this.tabId });
         }
       }),
     );
@@ -101,7 +102,7 @@ export class TabCoordinator implements Disposable {
     // we must NOT publish `coord:abdicate` (that would make every follower
     // elect at once and risk split-brain).
     this.cleanups.push(
-      this.bus.subscribe('coord:step-down', () => {
+      this.bus.subscribe(COORD.STEP_DOWN, () => {
         if (this._isLeader && !this.disposed) {
           this._isLeader = false;
           this.stopHeartbeat();
@@ -139,10 +140,10 @@ export class TabCoordinator implements Disposable {
 
       // A live leader rejected us, OR a lower-tabId concurrent candidate
       // pre-empted us — either way we step back and become a follower.
-      const unsub = this.bus.subscribe('coord:reject', () => finish(false));
+      const unsub = this.bus.subscribe(COORD.REJECT, () => finish(false));
       this.electionAbort = () => finish(false);
 
-      this.bus.publish('coord:election', { tabId: this.tabId });
+      this.bus.publish(COORD.ELECTION, { tabId: this.tabId });
 
       const timer = setTimeout(() => finish(true), this.electionTimeout);
     });
@@ -152,7 +153,7 @@ export class TabCoordinator implements Disposable {
     if (!this._isLeader) return;
     this._isLeader = false;
     this.stopHeartbeat();
-    this.bus.publish('coord:abdicate', { tabId: this.tabId });
+    this.bus.publish(COORD.ABDICATE, { tabId: this.tabId });
     for (const fn of this.onLoseLeadershipFns) fn();
   }
 
@@ -231,7 +232,7 @@ export class TabCoordinator implements Disposable {
     // No healthy leader answered — demand step-down, then take over. The
     // step-down message is delivered before our election frame on the same
     // ordered channel, so the old leader won't reject the election.
-    this.bus.publish('coord:step-down', { tabId: this.tabId });
+    this.bus.publish(COORD.STEP_DOWN, { tabId: this.tabId });
     this.stopLeaderCheck();
     await this.elect();
   }
@@ -241,13 +242,13 @@ export class TabCoordinator implements Disposable {
     const replyId = generateId();
     return new Promise<boolean>((resolve) => {
       let answered = false;
-      const unsub = this.bus.subscribe(`coord:pong:${replyId}`, () => {
+      const unsub = this.bus.subscribe(coordPongReply(replyId), () => {
         if (answered) return;
         answered = true;
         unsub();
         resolve(true);
       });
-      this.bus.publish('coord:ping', { replyId });
+      this.bus.publish(COORD.PING, { replyId });
       setTimeout(() => {
         unsub();
         if (!answered) resolve(false);
@@ -265,10 +266,10 @@ export class TabCoordinator implements Disposable {
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
-      this.bus.publish('coord:heartbeat', { tabId: this.tabId });
+      this.bus.publish(COORD.HEARTBEAT, { tabId: this.tabId });
     }, this.heartbeatInterval);
     // Send immediately
-    this.bus.publish('coord:heartbeat', { tabId: this.tabId });
+    this.bus.publish(COORD.HEARTBEAT, { tabId: this.tabId });
   }
 
   private stopHeartbeat(): void {
@@ -293,7 +294,7 @@ export class TabCoordinator implements Disposable {
           this.verifying = false;
         });
       }
-    }, 1000);
+    }, COORD_DEFAULTS.LEADER_CHECK_INTERVAL);
   }
 
   private stopLeaderCheck(): void {

@@ -1,5 +1,6 @@
 import './utils/disposable';
 import { backoff } from './utils/backoff';
+import { SOCKET_DEFAULTS } from './constants';
 import type { SocketState, Unsubscribe, EventHandler } from './types';
 
 interface SharedSocketOptions {
@@ -64,12 +65,12 @@ export class SharedSocket implements Disposable {
     this.opts = {
       protocols: options.protocols ?? [],
       reconnect: options.reconnect ?? true,
-      reconnectMaxDelay: options.reconnectMaxDelay ?? 30_000,
+      reconnectMaxDelay: options.reconnectMaxDelay ?? SOCKET_DEFAULTS.RECONNECT_MAX_DELAY,
       reconnectMaxRetries: options.reconnectMaxRetries ?? Infinity,
-      authFailureCloseCodes: new Set(options.authFailureCloseCodes ?? [1008]),
-      heartbeatInterval: options.heartbeatInterval ?? 30_000,
+      authFailureCloseCodes: new Set(options.authFailureCloseCodes ?? [SOCKET_DEFAULTS.AUTH_FAILURE_CLOSE_CODE]),
+      heartbeatInterval: options.heartbeatInterval ?? SOCKET_DEFAULTS.HEARTBEAT_INTERVAL,
       heartbeatTimeout: options.heartbeatTimeout ?? 0,
-      sendBuffer: options.sendBuffer ?? 100,
+      sendBuffer: options.sendBuffer ?? SOCKET_DEFAULTS.SEND_BUFFER,
       auth: options.auth,
       authToken: options.authToken,
       authParam: options.authParam ?? 'token',
@@ -213,7 +214,7 @@ export class SharedSocket implements Disposable {
     }
 
     this.setState('reconnecting');
-    const gen = backoff(1000, this.opts.reconnectMaxDelay);
+    const gen = backoff(SOCKET_DEFAULTS.BACKOFF_BASE, this.opts.reconnectMaxDelay);
 
     const attempt = () => {
       if (this.disposed) return;

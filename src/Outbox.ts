@@ -1,6 +1,7 @@
 import './utils/disposable';
 import { generateId } from './utils/id';
 import { MessageBus } from './MessageBus';
+import { BUS, busPendingReply, WS_DEFAULTS } from './constants';
 import type { FrameKind, FramePayload, Logger, Unsubscribe } from './types';
 
 interface OutboxEntry {
@@ -42,16 +43,16 @@ export class Outbox implements Disposable {
     // Originator drops its entry once the leader confirms the dispatch (or, on
     // leader change, the new leader confirms replay).
     this.cleanups.push(
-      this.bus.subscribe<{ id: string }>('ws:dispatch-flushed', (msg) => {
+      this.bus.subscribe<{ id: string }>(BUS.DISPATCH_FLUSHED, (msg) => {
         this.pending.delete(msg.id);
       }),
     );
 
     // A new leader asks every tab to announce its still-pending dispatches.
     this.cleanups.push(
-      this.bus.subscribe<{ replyId: string }>('ws:gather-pending', (req) => {
+      this.bus.subscribe<{ replyId: string }>(BUS.GATHER_PENDING, (req) => {
         if (this.pending.size === 0) return;
-        this.bus.publish(`ws:pending:${req.replyId}`, {
+        this.bus.publish(busPendingReply(req.replyId), {
           entries: [...this.pending.values()],
         });
       }),
@@ -71,7 +72,7 @@ export class Outbox implements Disposable {
   route(kind: FrameKind, payload: FramePayload): void {
     const id = generateId();
     if (kind === 'event') this.enqueue(id, kind, payload);
-    this.bus.publish('ws:dispatch', { id, kind, payload });
+    this.bus.publish(BUS.DISPATCH, { id, kind, payload });
   }
 
   private enqueue(id: string, kind: FrameKind, payload: FramePayload): void {
@@ -102,7 +103,7 @@ export class Outbox implements Disposable {
       // Remove from own pending (publish doesn't echo to self) and tell any
       // other tab that originated the same id to drop it as well.
       this.pending.delete(e.id);
-      this.bus.publish('ws:dispatch-flushed', { id: e.id });
+      this.bus.publish(BUS.DISPATCH_FLUSHED, { id: e.id });
       sent++;
     }
     this.log.info('[SharedWS] replayed pending dispatches', { count: sent });
@@ -113,7 +114,7 @@ export class Outbox implements Disposable {
    * for a short window, dedups by id (so multiple tabs holding the same id
    * don't double-replay).
    */
-  private gather(timeoutMs = 100): Promise<ReplayEntry[]> {
+  private gather(timeoutMs: number = WS_DEFAULTS.GATHER_PENDING_TIMEOUT): Promise<ReplayEntry[]> {
     const seen = new Map<string, ReplayEntry>();
     for (const e of this.pending.values()) {
       seen.set(e.id, { id: e.id, kind: e.kind, payload: e.payload });
@@ -122,14 +123,14 @@ export class Outbox implements Disposable {
 
     return new Promise((resolve) => {
       const unsub = this.bus.subscribe<{ entries: OutboxEntry[] }>(
-        `ws:pending:${replyId}`,
+        busPendingReply(replyId),
         (msg) => {
           for (const e of msg.entries) {
             if (!seen.has(e.id)) seen.set(e.id, { id: e.id, kind: e.kind, payload: e.payload });
           }
         },
       );
-      this.bus.publish('ws:gather-pending', { replyId });
+      this.bus.publish(BUS.GATHER_PENDING, { replyId });
       setTimeout(() => {
         unsub();
         resolve([...seen.values()]);

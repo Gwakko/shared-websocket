@@ -7,6 +7,7 @@ import { WorkerSocket } from './WorkerSocket';
 import { SubscriptionManager } from './SubscriptionManager';
 import { FramePipeline } from './FramePipeline';
 import { Outbox } from './Outbox';
+import { BUS, LIFECYCLE, AUTH_TOKEN_KEY, WS_DEFAULTS, busSubsReply, MESSAGE_BUS_CHANNEL } from './constants';
 import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol, EventMap, Logger, Middleware, FrameKind, FramePayload, ChannelAckResult } from './types';
 
 const DEFAULT_PROTOCOL: EventProtocol = {
@@ -114,7 +115,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.log = options.debug ? (options.logger ?? console) : NOOP_LOGGER;
     this.tabId = generateId();
     this.log.debug('[SharedWS] init', { tabId: this.tabId, url });
-    this.bus = new MessageBus('shared-ws', this.tabId);
+    this.bus = new MessageBus(MESSAGE_BUS_CHANNEL, this.tabId);
     this.coordinator = new TabCoordinator(this.bus, this.tabId, {
       electionTimeout: options.electionTimeout,
       heartbeatInterval: options.leaderHeartbeat,
@@ -127,7 +128,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.framePipeline = new FramePipeline(this.proto, this.log);
     this.outbox = new Outbox(
       this.bus,
-      options.outboundBufferSize ?? 100,
+      options.outboundBufferSize ?? WS_DEFAULTS.OUTBOUND_BUFFER_SIZE,
       (kind, payload) => this.framePipeline.transmit(kind, payload),
       this.log,
     );
@@ -148,7 +149,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     // When ANY tab receives a WS message via bus → emit to local subscribers
     this.cleanups.push(
-      this.bus.subscribe<{ event: string; data: unknown; raw?: unknown }>('ws:message', (msg) => {
+      this.bus.subscribe<{ event: string; data: unknown; raw?: unknown }>(BUS.MESSAGE, (msg) => {
         // Bare emit — fires any handler registered with the literal event name
         this.subs.emit(msg.event, msg.data, msg.raw);
 
@@ -177,14 +178,14 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     // transmit() so frameBuilder + outgoing middleware run on the tab that
     // actually owns the socket.
     this.cleanups.push(
-      this.bus.subscribe<{ kind: FrameKind; payload: FramePayload; id?: string }>('ws:dispatch', (msg) => {
+      this.bus.subscribe<{ kind: FrameKind; payload: FramePayload; id?: string }>(BUS.DISPATCH, (msg) => {
         if (this.coordinator.isLeader && this.socket) {
           this.framePipeline.transmit(msg.kind, msg.payload);
           // Tell the originator to drop the entry from its pending buffer.
           // Always flush — even when transmit was a no-op (middleware drop,
           // frameBuilder returned null) — there's no point retrying a
           // permanently-dropped frame.
-          if (msg.id) this.bus.publish('ws:dispatch-flushed', { id: msg.id });
+          if (msg.id) this.bus.publish(BUS.DISPATCH_FLUSHED, { id: msg.id });
         }
       }),
     );
@@ -193,7 +194,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     // Leader listens for reconnect requests from followers
     this.cleanups.push(
-      this.bus.subscribe<void>('ws:reconnect', () => {
+      this.bus.subscribe<void>(BUS.RECONNECT, () => {
         if (this.coordinator.isLeader && this.socket) {
           this.log.info('[SharedWS] manual reconnect requested by follower');
           this.socket.reconnect();
@@ -205,7 +206,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     // (e.g. auth-failure close code). Sent by authenticate() from followers
     // so they can recover with fresh creds without disrupting healthy tabs.
     this.cleanups.push(
-      this.bus.subscribe<void>('ws:authenticate-resume', () => {
+      this.bus.subscribe<void>(BUS.AUTH_RESUME, () => {
         if (this.coordinator.isLeader && this.socket?.state === 'failed') {
           this.log.info('[SharedWS] resume requested after auth — reconnecting failed socket');
           this.socket.reconnect();
@@ -216,8 +217,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     // Each tab announces its channels/topics on request. Used on leader
     // promotion or reconnect to rebuild the server-side subscription set.
     this.cleanups.push(
-      this.bus.subscribe<{ replyId: string }>('ws:gather-subs', (req) => {
-        this.bus.publish(`ws:subs:${req.replyId}`, {
+      this.bus.subscribe<{ replyId: string }>(BUS.GATHER_SUBS, (req) => {
+        this.bus.publish(busSubsReply(req.replyId), {
           channels: [...this.channelRefs.keys()],
           topics: [...this.topics],
         });
@@ -226,7 +227,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     // Sync across tabs
     this.cleanups.push(
-      this.bus.subscribe<{ key: string; value: unknown }>('ws:sync', (msg) => {
+      this.bus.subscribe<{ key: string; value: unknown }>(BUS.SYNC, (msg) => {
         this.syncStore.set(msg.key, msg.value);
         this.subs.emit(`sync:${msg.key}`, msg.value);
       }),
@@ -235,34 +236,34 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     // Leader lifecycle
     this.coordinator.onBecomeLeader(() => {
       this.handleBecomeLeader();
-      this.bus.broadcast('ws:lifecycle', { type: 'leader', isLeader: true });
+      this.bus.broadcast(BUS.LIFECYCLE, { type: 'leader', isLeader: true });
     });
     this.coordinator.onLoseLeadership(() => {
       this.handleLoseLeadership();
-      this.bus.broadcast('ws:lifecycle', { type: 'leader', isLeader: false });
+      this.bus.broadcast(BUS.LIFECYCLE, { type: 'leader', isLeader: false });
     });
 
     // Lifecycle events from bus (all tabs receive)
     this.cleanups.push(
-      this.bus.subscribe<{ type: string; isLeader?: boolean; error?: unknown; authenticated?: boolean }>('ws:lifecycle', (msg) => {
+      this.bus.subscribe<{ type: string; isLeader?: boolean; error?: unknown; authenticated?: boolean }>(BUS.LIFECYCLE, (msg) => {
         switch (msg.type) {
           case 'connect':
-            this.subs.emit('$lifecycle:connect', undefined);
+            this.subs.emit(LIFECYCLE.CONNECT, undefined);
             break;
           case 'disconnect':
-            this.subs.emit('$lifecycle:disconnect', undefined);
+            this.subs.emit(LIFECYCLE.DISCONNECT, undefined);
             break;
           case 'reconnecting':
-            this.subs.emit('$lifecycle:reconnecting', undefined);
+            this.subs.emit(LIFECYCLE.RECONNECTING, undefined);
             break;
           case 'reconnectFailed':
-            this.subs.emit('$lifecycle:reconnectFailed', undefined);
+            this.subs.emit(LIFECYCLE.RECONNECT_FAILED, undefined);
             break;
           case 'leader':
-            this.subs.emit('$lifecycle:leader', msg.isLeader);
+            this.subs.emit(LIFECYCLE.LEADER, msg.isLeader);
             break;
           case 'error':
-            this.subs.emit('$lifecycle:error', msg.error);
+            this.subs.emit(LIFECYCLE.ERROR, msg.error);
             break;
           case 'auth': {
             this._isAuthenticated = !!msg.authenticated;
@@ -270,7 +271,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
               this.authChannels.clear();
               this.authTopics.clear();
             }
-            this.subs.emit('$lifecycle:auth', msg.authenticated);
+            this.subs.emit(LIFECYCLE.AUTH, msg.authenticated);
             break;
           }
         }
@@ -281,7 +282,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     if (typeof document !== 'undefined') {
       const onVisibilityChange = () => {
         const active = !document.hidden;
-        this.subs.emit('$lifecycle:active', active);
+        this.subs.emit(LIFECYCLE.ACTIVE, active);
         this.log.debug('[SharedWS]', active ? '👁 tab active' : '👁 tab hidden');
         // On re-activation, make sure the leader (and its socket) survived
         // the idle period; take over if it didn't. Opt-out via recoverOnActivate.
@@ -303,8 +304,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         this.authChannels.clear();
         this.authTopics.clear();
         this._isAuthenticated = false;
-        this.syncStore.delete('$auth:token');
-        this.subs.emit('$lifecycle:auth', false);
+        this.syncStore.delete(AUTH_TOKEN_KEY);
+        this.subs.emit(LIFECYCLE.AUTH, false);
         this.log.warn('[SharedWS] auth revoked by server');
       }),
     );
@@ -344,17 +345,17 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
   /** Called when WebSocket connection opens (broadcast to all tabs). */
   onConnect(fn: () => void): Unsubscribe {
-    return this.subs.on('$lifecycle:connect', fn);
+    return this.subs.on(LIFECYCLE.CONNECT, fn);
   }
 
   /** Called when WebSocket connection closes (broadcast to all tabs). */
   onDisconnect(fn: () => void): Unsubscribe {
-    return this.subs.on('$lifecycle:disconnect', fn);
+    return this.subs.on(LIFECYCLE.DISCONNECT, fn);
   }
 
   /** Called when WebSocket starts reconnecting (broadcast to all tabs). */
   onReconnecting(fn: () => void): Unsubscribe {
-    return this.subs.on('$lifecycle:reconnecting', fn);
+    return this.subs.on(LIFECYCLE.RECONNECTING, fn);
   }
 
   /**
@@ -368,7 +369,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * });
    */
   onReconnectFailed(fn: () => void): Unsubscribe {
-    return this.subs.on('$lifecycle:reconnectFailed', fn);
+    return this.subs.on(LIFECYCLE.RECONNECT_FAILED, fn);
   }
 
   /**
@@ -385,37 +386,37 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     if (this.coordinator.isLeader && this.socket) {
       this.socket.reconnect();
     } else {
-      this.bus.publish('ws:reconnect', undefined);
+      this.bus.publish(BUS.RECONNECT, undefined);
     }
   }
 
   /** Called when this tab becomes leader or loses leadership. */
   onLeaderChange(fn: (isLeader: boolean) => void): Unsubscribe {
-    return this.subs.on('$lifecycle:leader', fn as EventHandler);
+    return this.subs.on(LIFECYCLE.LEADER, fn as EventHandler);
   }
 
   /** Called on WebSocket or network error (broadcast to all tabs). */
   onError(fn: (error: unknown) => void): Unsubscribe {
-    return this.subs.on('$lifecycle:error', fn as EventHandler);
+    return this.subs.on(LIFECYCLE.ERROR, fn as EventHandler);
   }
 
   /** Called when this tab becomes visible/focused. */
   onActive(fn: () => void): Unsubscribe {
-    return this.subs.on('$lifecycle:active', ((isActive: unknown) => {
+    return this.subs.on(LIFECYCLE.ACTIVE, ((isActive: unknown) => {
       if (isActive === true) fn();
     }) as EventHandler);
   }
 
   /** Called when this tab goes to background/hidden. */
   onInactive(fn: () => void): Unsubscribe {
-    return this.subs.on('$lifecycle:active', ((isActive: unknown) => {
+    return this.subs.on(LIFECYCLE.ACTIVE, ((isActive: unknown) => {
       if (isActive === false) fn();
     }) as EventHandler);
   }
 
   /** Called on any visibility change. */
   onVisibilityChange(fn: (isActive: boolean) => void): Unsubscribe {
-    return this.subs.on('$lifecycle:active', fn as EventHandler);
+    return this.subs.on(LIFECYCLE.ACTIVE, fn as EventHandler);
   }
 
   // ─── Authentication ──────────────────────────────────
@@ -435,9 +436,9 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    */
   authenticate(token: string): void {
     this._isAuthenticated = true;
-    this.syncStore.set('$auth:token', token);
-    this.bus.broadcast('ws:sync', { key: '$auth:token', value: token });
-    this.bus.broadcast('ws:lifecycle', { type: 'auth', authenticated: true });
+    this.syncStore.set(AUTH_TOKEN_KEY, token);
+    this.bus.broadcast(BUS.SYNC, { key: AUTH_TOKEN_KEY, value: token });
+    this.bus.broadcast(BUS.LIFECYCLE, { type: 'auth', authenticated: true });
     this.log.info('[SharedWS] authenticated');
 
     // If the leader's socket gave up (e.g. auth-failure close code), the new
@@ -450,7 +451,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     if (!this.coordinator.isLeader) {
       // Followers can't see leader state — hint to leader to reconnect IFF failed.
-      this.bus.publish('ws:authenticate-resume', undefined);
+      this.bus.publish(BUS.AUTH_RESUME, undefined);
     }
 
     this.dispatch('auth-login', { data: token });
@@ -472,9 +473,9 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     this._isAuthenticated = false;
     this.dispatch('auth-logout', {});
-    this.syncStore.delete('$auth:token');
-    this.bus.broadcast('ws:sync', { key: '$auth:token', value: undefined });
-    this.bus.broadcast('ws:lifecycle', { type: 'auth', authenticated: false });
+    this.syncStore.delete(AUTH_TOKEN_KEY);
+    this.bus.broadcast(BUS.SYNC, { key: AUTH_TOKEN_KEY, value: undefined });
+    this.bus.broadcast(BUS.LIFECYCLE, { type: 'auth', authenticated: false });
     this.log.info('[SharedWS] deauthenticated');
   }
 
@@ -487,7 +488,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * });
    */
   onAuthChange(fn: (authenticated: boolean) => void): Unsubscribe {
-    return this.subs.on('$lifecycle:auth', fn as EventHandler);
+    return this.subs.on(LIFECYCLE.AUTH, fn as EventHandler);
   }
 
   // ─── Middleware ───────────────────────────────────────
@@ -646,14 +647,14 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   }
 
   /** Request/response through server via leader. */
-  async request<T>(event: string, data: unknown, timeout = 5000): Promise<T> {
+  async request<T>(event: string, data: unknown, timeout = WS_DEFAULTS.REQUEST_TIMEOUT): Promise<T> {
     // If THIS tab owns the socket, answer locally. Routing through the bus
     // would dead-end: `bus.respond` ignores requests from its own tabId, so a
     // leader calling request() would never get a response and always time out.
     if (this.coordinator.isLeader && this.socket) {
       return this.performRequest(event, data, timeout) as Promise<T>;
     }
-    return this.bus.request('ws:request', { event, data, timeout }, timeout);
+    return this.bus.request(BUS.REQUEST, { event, data, timeout }, timeout);
   }
 
   /**
@@ -694,7 +695,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   /** Sync state across tabs (no server roundtrip). */
   sync<T>(key: string, value: T): void {
     this.syncStore.set(key, value);
-    this.bus.broadcast('ws:sync', { key, value });
+    this.bus.broadcast(BUS.SYNC, { key, value });
   }
 
   getSync<T>(key: string): T | undefined {
@@ -725,7 +726,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     // server response. With no matcher configured, ready resolves
     // synchronously on the next microtask after dispatch.
     const matcher = this.proto.channelAckMatcher;
-    const ackTimeout = this.proto.channelAckTimeout ?? 5000;
+    const ackTimeout = this.proto.channelAckTimeout ?? WS_DEFAULTS.CHANNEL_ACK_TIMEOUT;
     let cancelReady: ((reason: Error) => void) | undefined;
 
     const ready = matcher
@@ -1070,25 +1071,25 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       }
 
       this.log.debug('[SharedWS] ← recv', event, { data: payload, raw: data });
-      this.bus.broadcast('ws:message', { event, data: payload, raw: data });
+      this.bus.broadcast(BUS.MESSAGE, { event, data: payload, raw: data });
     });
 
     this.socket.onStateChange((state: string) => {
       this.log.info('[SharedWS]', state === 'connected' ? '✓ connected' : state === 'reconnecting' ? '🔄 reconnecting' : state === 'failed' ? '✗ reconnect failed' : `state: ${state}`);
       switch (state) {
         case 'connected':
-          this.bus.broadcast('ws:lifecycle', { type: 'connect' });
+          this.bus.broadcast(BUS.LIFECYCLE, { type: 'connect' });
           void this.onConnected();
           break;
         case 'closed':
-          this.bus.broadcast('ws:lifecycle', { type: 'disconnect' });
+          this.bus.broadcast(BUS.LIFECYCLE, { type: 'disconnect' });
           break;
         case 'reconnecting':
-          this.bus.broadcast('ws:lifecycle', { type: 'reconnecting' });
+          this.bus.broadcast(BUS.LIFECYCLE, { type: 'reconnecting' });
           break;
         case 'failed':
-          this.bus.broadcast('ws:lifecycle', { type: 'reconnectFailed' });
-          this.bus.broadcast('ws:lifecycle', { type: 'disconnect' });
+          this.bus.broadcast(BUS.LIFECYCLE, { type: 'reconnectFailed' });
+          this.bus.broadcast(BUS.LIFECYCLE, { type: 'disconnect' });
           break;
       }
     });
@@ -1098,11 +1099,11 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     // down on leadership loss (see handleLoseLeadership).
     this.requestResponderCleanup?.();
     this.requestResponderCleanup = this.bus.respond<{ event: string; data: unknown; timeout?: number }, unknown>(
-      'ws:request',
+      BUS.REQUEST,
       // Swallow a rejection (timeout / no socket) to undefined: the follower
       // that asked has its own bus.request timeout and will have given up, so
       // the late response is dropped anyway. Avoids an unhandled rejection.
-      (req) => this.performRequest(req.event, req.data, req.timeout ?? 5000).catch(() => undefined),
+      (req) => this.performRequest(req.event, req.data, req.timeout ?? WS_DEFAULTS.REQUEST_TIMEOUT).catch(() => undefined),
     );
 
     void this.socket.connect();
@@ -1139,7 +1140,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     // 1. Re-authenticate first so subsequent auth-channel joins succeed.
     if (this._isAuthenticated) {
-      const token = this.syncStore.get('$auth:token') as string | undefined;
+      const token = this.syncStore.get(AUTH_TOKEN_KEY) as string | undefined;
       if (token) {
         this.framePipeline.transmit('auth-login', { data: token });
         this.log.debug('[SharedWS] re-authenticated after reconnect');
@@ -1171,21 +1172,21 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * The leader's own subs are seeded into the result to avoid relying on
    * BroadcastChannel echo to self.
    */
-  private gatherSubscriptions(timeoutMs = 150): Promise<{ channels: string[]; topics: string[] }> {
+  private gatherSubscriptions(timeoutMs: number = WS_DEFAULTS.GATHER_SUBS_TIMEOUT): Promise<{ channels: string[]; topics: string[] }> {
     const channels = new Set<string>(this.channelRefs.keys());
     const topics = new Set<string>(this.topics);
     const replyId = generateId();
 
     return new Promise((resolve) => {
       const unsub = this.bus.subscribe<{ channels: string[]; topics: string[] }>(
-        `ws:subs:${replyId}`,
+        busSubsReply(replyId),
         (msg) => {
           for (const c of msg.channels) channels.add(c);
           for (const t of msg.topics) topics.add(t);
         },
       );
 
-      this.bus.publish('ws:gather-subs', { replyId });
+      this.bus.publish(BUS.GATHER_SUBS, { replyId });
 
       setTimeout(() => {
         unsub();
