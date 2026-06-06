@@ -13,6 +13,7 @@ export { WorkerSocket } from './WorkerSocket';
 export { SubscriptionManager } from './SubscriptionManager';
 
 // Types
+export type { PushConfig } from './PushManager';
 export type { WithSocketCallback, WithSocketOptions, SocketScope } from './withSocket';
 export type {
   SharedWebSocketOptions,

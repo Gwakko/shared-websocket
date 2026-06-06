@@ -9,6 +9,7 @@ import { FramePipeline } from './FramePipeline';
 import { Outbox } from './Outbox';
 import { SubscriptionRegistry } from './SubscriptionRegistry';
 import { AuthManager } from './AuthManager';
+import { PushManager, type PushConfig } from './PushManager';
 import { BUS, LIFECYCLE, WS_DEFAULTS, MESSAGE_BUS_CHANNEL } from './constants';
 import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol, EventMap, Logger, Middleware, FrameKind, FramePayload, ChannelAckResult } from './types';
 
@@ -95,6 +96,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private readonly subscriptions: SubscriptionRegistry;
   /** Runtime auth: login/logout, token refresh, re-auth on connect, revocation. */
   private readonly auth: AuthManager;
+  /** Routes events to render/native notifications by target tab. */
+  private readonly pushManager: PushManager;
   /** Listeners for every raw incoming frame (post-deserialize, post-middleware). */
   private rawFrameListeners = new Set<(raw: unknown) => void>();
   /**
@@ -147,6 +150,12 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       authRevokedEvent: this.proto.authRevoked,
       refresh: this.options.refresh ?? this.options.auth,
       refreshInterval: this.options.refreshTokenInterval,
+      log: this.log,
+    });
+    this.pushManager = new PushManager({
+      on: (event, handler) => this.on(event, handler),
+      isLeader: () => this.coordinator.isLeader,
+      isActive: () => this.isActive,
       log: this.log,
     });
 
@@ -857,85 +866,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    *   title: (order) => `New Order #${order.id}`,      // leader → native
    * });
    */
-  push<T = unknown>(
-    event: string,
-    config: {
-      /** Custom render function — you decide how to display. */
-      render?: (data: T) => void;
-      /** Title for browser Notification API. */
-      title?: string | ((data: T) => string);
-      /** Body for browser Notification API. */
-      body?: string | ((data: T) => string);
-      /** Icon URL for browser Notification. */
-      icon?: string;
-      /** Tag for browser Notification deduplication. */
-      tag?: string | ((data: T) => string);
-      /**
-       * Which tab(s) show the notification:
-       * - `'active'` — only the visible/focused tab (default for render)
-       * - `'leader'` — only the leader tab (default for browser Notification)
-       * - `'all'` — every tab (critical alerts)
-       */
-      target?: 'active' | 'leader' | 'all';
-      /** Called when browser Notification is clicked. */
-      onClick?: (data: T) => void;
-    },
-  ): Unsubscribe {
-    const useNativeNotification = !!config.title;
-
-    // Default target: 'active' for render, 'leader' for native
-    const renderTarget = config.target ?? 'active';
-    const nativeTarget = config.target ?? 'leader';
-
-    if (useNativeNotification && typeof Notification !== 'undefined' && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
-
-    return this.on(event, ((data: unknown) => {
-      const typed = data as T;
-      const isVisible = typeof document !== 'undefined' && !document.hidden;
-      const isLeader = this.tabRole === 'leader';
-
-      // Custom render
-      if (config.render) {
-        const shouldRender =
-          renderTarget === 'all' ||
-          (renderTarget === 'active' && isVisible) ||
-          (renderTarget === 'leader' && isLeader);
-
-        if (shouldRender) {
-          config.render(typed);
-          this.log.debug('[SharedWS] 🔔 render', event, `(target: ${renderTarget})`);
-        }
-      }
-
-      // Browser Notification API
-      if (useNativeNotification && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        const shouldNotify =
-          nativeTarget === 'all' ||
-          (nativeTarget === 'leader' && isLeader) ||
-          (nativeTarget === 'active' && isVisible);
-
-        // Native notifications make sense when tab is hidden
-        if (shouldNotify && !isVisible) {
-          const title = typeof config.title === 'function' ? config.title(typed) : config.title!;
-          const body = typeof config.body === 'function' ? config.body(typed) : config.body;
-          const tag = typeof config.tag === 'function' ? config.tag(typed) : config.tag;
-
-          const notif = new Notification(title, { body, icon: config.icon, tag });
-
-          if (config.onClick) {
-            const handler = config.onClick;
-            notif.onclick = () => {
-              handler(typed);
-              window.focus();
-            };
-          }
-
-          this.log.debug('[SharedWS] 🔔 native', title, `(target: ${nativeTarget})`);
-        }
-      }
-    }) as EventHandler);
+  push<T = unknown>(event: string, config: PushConfig<T>): Unsubscribe {
+    return this.pushManager.push(event, config);
   }
 
   disconnect(): void {
