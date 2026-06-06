@@ -212,6 +212,73 @@ first, see #5b) and in-flight sends both survive promotion.
 - Leader-originated sends are not buffered — when a leader dies its
   own state is gone anyway; nothing to replay to.
 
+## Idle Tab Recovery (stuck-leader takeover)
+
+Browsers aggressively throttle `setInterval`/`setTimeout` in backgrounded
+tabs (often down to once per minute, and freezing them entirely under
+memory pressure / bfcache). If the **leader** tab is the one that gets
+backgrounded, two things happen:
+
+1. Its heartbeat slows or stops, and its WebSocket can be silently killed
+   by the OS/network without the tab's JS running to notice.
+2. Followers' own leader-timeout checks are *also* throttled, so they may
+   not notice the leader went stale before you switch back to them.
+
+The net effect: you return to a previously-idle tab and the connection is
+**stuck** — the dead leader still "holds" leadership, so a normal election
+keeps deferring to it.
+
+To fix this, a tab verifies real leader health (not just "did a heartbeat
+arrive") through a `BroadcastChannel` ping/pong. A leader only answers a
+ping while its socket is genuinely `connected`, so a zombie leader stays
+silent and gets replaced. The check runs from **two independent triggers**,
+which together cover every layout:
+
+- **When a tab becomes visible again** (`visibilitychange`). A follower
+  pings the leader and waits up to `leaderPingTimeout` (default `1500` ms);
+  if no healthy leader answers it forces the stuck leader to step down and
+  **takes over** the connection. A leader re-checks its own socket and
+  reconnects in place if it died while backgrounded.
+- **From the follower's heartbeat-staleness check**, which keeps running on
+  any tab that *stays* active. This is the important one for your reported
+  case: the current tab is a follower that was active the whole time while a
+  *different*, backgrounded tab held a now-dead leader socket — there is no
+  visibility change to react to, but the staleness timer notices the lapsed
+  heartbeat, pings for real health, and takes over. (Previously this path
+  blindly re-elected, so a zombie leader could still reject the election and
+  leave the connection stuck.)
+
+> The only case neither trigger can catch is a leader that *keeps
+> heartbeating at full speed* (e.g. visible on a second monitor) yet has a
+> silently-dead socket. That's detected and self-healed one layer down by
+> the socket's own `heartbeatInterval` ping/pong + auto-reconnect.
+
+This is **on by default** — no configuration needed. Two knobs tune it:
+
+```typescript
+const ws = new SharedWebSocket('wss://api.example.com/ws', {
+  // How long an active tab waits for the leader's pong before taking over.
+  // Raise it on slow machines if you see unnecessary handovers; lower it
+  // for faster recovery. Default: 1500ms.
+  leaderPingTimeout: 1500,
+
+  // Master switch for the whole active-tab recovery behavior. Set false to
+  // rely purely on heartbeat timeout (not recommended for long-idle tabs).
+  recoverOnActivate: true,
+});
+```
+
+Pair it with `onActive` if you want to react in the UI when a tab wakes up
+(e.g. show a "reconnecting…" hint while takeover completes):
+
+```typescript
+ws.onActive(() => {
+  // Fires when this tab becomes visible. Leader verification has already
+  // been kicked off internally; use this for your own refresh logic.
+  if (!ws.connected) showReconnectingHint();
+});
+```
+
 ## Custom Serialization
 
 By default all messages are serialized/deserialized as JSON. Override for binary formats.

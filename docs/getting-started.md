@@ -57,6 +57,8 @@ const ws = new SharedWebSocket('wss://api.example.com/ws', {
   auth: () => localStorage.getItem('token')!,  // or authToken: 'static-token'
   authParam: 'token',  // default — query param name (?token=xxx)
   useWorker: true,     // optional — offload WebSocket to Web Worker
+  recoverOnActivate: true,  // default — re-elect leader if it went stale while idle
+  leaderPingTimeout: 1500,  // default — wait this long for the leader before taking over
 });
 
 await ws.connect();
@@ -174,6 +176,7 @@ function App() {
       options={{
         auth: () => localStorage.getItem('token')!,
         useWorker: true,
+        recoverOnActivate: true,  // re-elect a stale leader when a tab wakes up
       }}
     >
       <Dashboard />
@@ -222,6 +225,7 @@ const app = createApp(App);
 app.use(createSharedWebSocketPlugin('wss://api.example.com/ws', {
   auth: () => localStorage.getItem('token')!,
   useWorker: true,
+  recoverOnActivate: true,  // re-elect a stale leader when a tab wakes up
 }));
 app.mount('#app');
 </script>
@@ -255,6 +259,78 @@ function addToCart() {
   <p v-if="order">Latest order: #{{ order.id }}</p>
   <button @click="ws.send('ping', {})">Ping</button>
   <button @click="addToCart">Add to cart ({{ cart.items.length }})</button>
+</template>
+```
+
+## Idle Tab Recovery
+
+Long-idle tabs are a classic source of "stuck WebSocket" bugs: the browser
+throttles the leader tab's timers in the background and may silently kill
+its socket, so when you switch back to another tab the connection never
+recovers. The library handles this automatically — when a tab becomes
+visible it verifies the leader is alive and **takes over the connection if
+it isn't**. See [Idle Tab Recovery in configuration](./configuration.md#idle-tab-recovery-stuck-leader-takeover)
+for how it works and the `recoverOnActivate` / `leaderPingTimeout` knobs.
+
+You usually don't write any code for this. If you want to reflect the
+hand-off in the UI, hook `onActive` / the framework equivalents:
+
+### Vanilla TypeScript
+
+```typescript
+// Recovery is automatic. Use onActive only to update your own UI.
+ws.onActive(() => {
+  // This tab just became visible; leader verification is already running.
+  if (!ws.connected) showReconnectingHint();
+});
+
+ws.onLeaderChange((isLeader) => {
+  // Fires on the tab that takes over a stale leader.
+  console.log(isLeader ? 'took over connection' : 'now a follower');
+});
+
+// Opt out (rely on heartbeat timeout only):
+// new SharedWebSocket(url, { recoverOnActivate: false });
+```
+
+### React
+
+```tsx
+import { useSocketStatus, useSocketLifecycle } from '@gwakko/shared-websocket/react';
+
+function ConnectionBadge() {
+  const { connected, tabRole } = useSocketStatus();
+
+  useSocketLifecycle({
+    onActive: () => {
+      // Tab woke up — recovery/takeover happens under the hood.
+      // Do any view-specific refresh here.
+    },
+    onLeaderChange: (isLeader) => console.log('leader:', isLeader),
+  });
+
+  return <span>{connected ? `Online (${tabRole})` : 'Reconnecting…'}</span>;
+}
+```
+
+### Vue 3
+
+```vue
+<script setup lang="ts">
+import { useSocketStatus, useSocketLifecycle } from '@gwakko/shared-websocket/vue';
+
+const { connected, tabRole } = useSocketStatus();
+
+useSocketLifecycle({
+  onActive: () => {
+    // Tab woke up — recovery/takeover is automatic; refresh view state here.
+  },
+  onLeaderChange: (isLeader) => console.log('leader:', isLeader),
+});
+</script>
+
+<template>
+  <span>{{ connected ? `Online (${tabRole})` : 'Reconnecting…' }}</span>
 </template>
 ```
 

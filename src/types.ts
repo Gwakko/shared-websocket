@@ -112,6 +112,20 @@ export interface SharedWebSocketOptions<TEvents extends EventMap = EventMap> {
   electionTimeout?: number;
   leaderHeartbeat?: number;
   leaderTimeout?: number;
+  /**
+   * When a tab becomes visible again after being idle, ping the current
+   * leader and re-elect this tab if no healthy leader answers within this
+   * window (ms). Guards against the case where a backgrounded leader's
+   * timers were throttled and its socket silently died, so followers never
+   * saw the heartbeat lapse and the connection stayed stuck. Default: 1500.
+   */
+  leaderPingTimeout?: number;
+  /**
+   * Verify the leader (and take over if it's unresponsive) whenever this tab
+   * becomes active again. Set to `false` to disable the active-tab recovery
+   * and rely solely on heartbeat timeout. Default: `true`.
+   */
+  recoverOnActivate?: boolean;
   sendBuffer?: number;
   /** Auth token provider — called before each connect/reconnect. */
   auth?: () => string | Promise<string>;

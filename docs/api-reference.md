@@ -61,6 +61,8 @@ Callback receives `{ ws, signal }` — destructure what you need. Signal aborts 
 | `electionTimeout` | `number` | `200` | Leader election timeout (ms) |
 | `leaderHeartbeat` | `number` | `2000` | Leader heartbeat interval (ms) |
 | `leaderTimeout` | `number` | `5000` | Leader absence timeout (ms) |
+| `leaderPingTimeout` | `number` | `1500` | On re-activation, how long to wait for the leader's pong before taking over (ms) |
+| `recoverOnActivate` | `boolean` | `true` | Verify the leader (and take over if it's stuck) when the tab becomes active |
 | `serialize` | `(data) => string \| ArrayBuffer` | `JSON.stringify` | Custom outgoing serializer |
 | `deserialize` | `(raw) => unknown` | `JSON.parse` | Custom incoming deserializer |
 

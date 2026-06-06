@@ -4,6 +4,38 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0]
+
+### Added
+
+- **Stuck-leader recovery on idle tabs (health-verified takeover).** Browsers
+  throttle (and eventually freeze) timers in backgrounded tabs. When the
+  *leader* tab was the one backgrounded, its heartbeat slowed/stopped and its
+  WebSocket could be silently killed — yet the dead leader still "held"
+  leadership, so a normal election kept deferring to it and the connection
+  stayed stuck after you switched tabs.
+
+  `TabCoordinator` now verifies *real* leader health via a `BroadcastChannel`
+  ping/pong: a leader only answers a ping while its socket is genuinely
+  `connected` (wired up by `SharedWebSocket` via `setHealthCheck`). A zombie
+  leader stays silent and is forced to step down so an active tab can take
+  over. The check fires from two independent triggers:
+  - on `visibilitychange` when a tab becomes visible (`verifyLeader()`), and
+  - from the follower's heartbeat-staleness timer, which keeps running on any
+    tab that *stays* active — covering the case where the current tab was
+    never hidden but a different, backgrounded tab held the dead leader. This
+    path previously re-elected blindly (and got rejected by the zombie).
+
+  A leader that finds its *own* socket dead on re-activation reconnects in
+  place instead of handing off.
+
+### Options
+
+- `leaderPingTimeout` (default `1500` ms) — how long an active tab waits for
+  the leader's pong before taking over.
+- `recoverOnActivate` (default `true`) — master switch for the active-tab
+  verification. Set `false` to rely solely on heartbeat timeout.
+
 ## [0.14.6]
 
 ### Fixed

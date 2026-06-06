@@ -115,7 +115,22 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       electionTimeout: options.electionTimeout,
       heartbeatInterval: options.leaderHeartbeat,
       leaderTimeout: options.leaderTimeout,
+      leaderPingTimeout: options.leaderPingTimeout,
     });
+
+    // Let the coordinator decide leader health from real socket state — a
+    // backgrounded leader with a dead socket fails this check and is taken
+    // over by the next active tab instead of clinging to leadership.
+    this.coordinator.setHealthCheck(() => this.socket?.state === 'connected');
+
+    // If self-verification finds this tab is leader with a dead socket,
+    // reconnect rather than hand off — we already own the socket.
+    this.cleanups.push(
+      this.coordinator.onLeaderUnhealthy(() => {
+        this.log.warn('[SharedWS] leader socket unhealthy on activate — reconnecting');
+        this.socket?.reconnect();
+      }),
+    );
 
     // When ANY tab receives a WS message via bus → emit to local subscribers
     this.cleanups.push(
@@ -271,6 +286,11 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         const active = !document.hidden;
         this.subs.emit('$lifecycle:active', active);
         this.log.debug('[SharedWS]', active ? '👁 tab active' : '👁 tab hidden');
+        // On re-activation, make sure the leader (and its socket) survived
+        // the idle period; take over if it didn't. Opt-out via recoverOnActivate.
+        if (active && (this.options.recoverOnActivate ?? true)) {
+          void this.coordinator.verifyLeader();
+        }
       };
       document.addEventListener('visibilitychange', onVisibilityChange);
       this.cleanups.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));
