@@ -43,7 +43,13 @@ export class AuthManager implements Disposable {
   private readonly authChannels = new Map<string, Channel>();
   /** Auth-scoped topics — auto-unsubscribed on deauth/revocation. */
   private readonly authTopics = new Set<string>();
-  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Wall-clock time of the last token refresh — drives the catch-up check. */
+  private lastRefreshAt = 0;
+  /** Guards against overlapping refreshes (interval tick vs. catch-up). */
+  private refreshing = false;
+  /** True when the refresh loop is not running (not leader / stopped / disposed). */
+  private refreshStopped = true;
   private cleanups: Unsubscribe[] = [];
 
   constructor(private readonly deps: AuthManagerDeps) {
@@ -108,6 +114,7 @@ export class AuthManager implements Disposable {
    */
   authenticate(token: string): void {
     this._isAuthenticated = true;
+    this.lastRefreshAt = Date.now(); // a fresh token resets refresh staleness
     this.deps.syncStore.set(AUTH_TOKEN_KEY, token);
     this.deps.bus.broadcast(BUS.SYNC, { key: AUTH_TOKEN_KEY, value: token });
     this.deps.bus.broadcast(BUS.LIFECYCLE, { type: 'auth', authenticated: true });
@@ -178,31 +185,73 @@ export class AuthManager implements Disposable {
    * auth-login. Idempotent.
    */
   startRefresh(): void {
-    if (this.refreshTimer) return;
-    const { refresh, refreshInterval } = this.deps;
-    if (!refresh || !refreshInterval || refreshInterval <= 0) return;
-    if (!this.deps.isLeader()) return;
-
-    this.refreshTimer = setInterval(async () => {
-      if (!this.deps.isLeader() || !this._isAuthenticated) return;
-      try {
-        const token = await refresh();
-        if (!token) {
-          this.deps.log.warn('[SharedWS] refresh() returned empty token — skipping');
-          return;
-        }
-        this.authenticate(token);
-      } catch (err) {
-        this.deps.log.warn('[SharedWS] refresh() failed', err);
-      }
-    }, refreshInterval);
+    if (!this.refreshStopped) return; // already running
+    if (!this.canRefresh() || !this.deps.isLeader()) return;
+    this.refreshStopped = false;
+    this.lastRefreshAt = Date.now();
+    this.scheduleRefresh();
   }
 
   stopRefresh(): void {
+    this.refreshStopped = true;
     if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
+      clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
     }
+  }
+
+  /**
+   * Catch up a refresh that a backgrounded leader missed. Browsers throttle (or
+   * freeze) timers in hidden tabs, so the periodic refresh can lapse and the
+   * token expire. Call this when the tab becomes visible again: if more than an
+   * interval has elapsed since the last refresh, refresh immediately. No-op on
+   * followers or when refresh isn't configured.
+   */
+  refreshIfStale(): void {
+    if (this.refreshStopped || this.refreshing) return;
+    if (!this.deps.isLeader() || !this._isAuthenticated) return;
+    const interval = this.deps.refreshInterval;
+    if (!this.deps.refresh || !interval || interval <= 0) return;
+    if (Date.now() - this.lastRefreshAt >= interval) {
+      void this.runRefresh();
+    }
+  }
+
+  private canRefresh(): boolean {
+    const interval = this.deps.refreshInterval;
+    return !!this.deps.refresh && !!interval && interval > 0;
+  }
+
+  /**
+   * Self-rescheduling tick (not setInterval): each run lines up the next from
+   * *now*, so a catch-up refresh on re-activation also resets the cadence
+   * instead of racing a still-pending interval.
+   */
+  private scheduleRefresh(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => { void this.runRefresh(); }, this.deps.refreshInterval);
+  }
+
+  private async runRefresh(): Promise<void> {
+    if (this.refreshing) return;
+    if (this.deps.isLeader() && this._isAuthenticated && this.deps.refresh) {
+      this.refreshing = true;
+      try {
+        const token = await this.deps.refresh();
+        if (token) {
+          this.lastRefreshAt = Date.now();
+          this.authenticate(token);
+        } else {
+          this.deps.log.warn('[SharedWS] refresh() returned empty token — skipping');
+        }
+      } catch (err) {
+        this.deps.log.warn('[SharedWS] refresh() failed', err);
+      } finally {
+        this.refreshing = false;
+      }
+    }
+    // Reschedule unless we were stopped/disposed while awaiting.
+    if (!this.refreshStopped) this.scheduleRefresh();
   }
 
   [Symbol.dispose](): void {

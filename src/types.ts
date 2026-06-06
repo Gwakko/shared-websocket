@@ -143,11 +143,16 @@ export interface SharedWebSocketOptions<TEvents extends EventMap = EventMap> {
   /** Query parameter name for the token (default: "token"). */
   authParam?: string;
   /**
-   * Optional. Periodic token refresh — runs on the leader tab only via
-   * `setInterval(refresh, refreshTokenInterval)`. When the timer fires
-   * and the connection is currently authenticated, the returned token
-   * is passed to `authenticate()` so the server sees the new credentials
-   * before the old one expires. Falls back to `auth` if unset.
+   * Optional. Periodic token refresh — runs on the leader tab only on a
+   * self-scheduling timer. When it fires and the connection is currently
+   * authenticated, the returned token is passed to `authenticate()` so the
+   * server sees the new credentials before the old one expires. Falls back to
+   * `auth` if unset.
+   *
+   * Browsers throttle (or freeze) timers in backgrounded tabs, so the timer
+   * alone can lapse on a long-idle leader. To compensate, a refresh that is
+   * overdue by at least one interval is also triggered when the tab becomes
+   * visible again.
    *
    * Use this for long-running tabs where the server would otherwise
    * close with an auth-failure code mid-session. Pair with a sensible

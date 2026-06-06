@@ -116,4 +116,37 @@ describe('visibility-driven recovery', () => {
 
     ws.disconnect();
   });
+
+  it('catches up a token refresh the throttled timer missed while backgrounded', async () => {
+    const doc = makeDocMock();
+    doc.hidden = false;
+    (globalThis as { document?: unknown }).document = doc;
+
+    let n = 0;
+    const ws = new SharedWebSocket('wss://x', {
+      electionTimeout: 50,
+      refreshTokenInterval: 10_000,
+      refresh: () => `tok${++n}`,
+    });
+    await connectAndElect(ws);
+    MockWebSocket.last().open();
+    ws.authenticate('tok0');
+    await vi.advanceTimersByTimeAsync(5);
+
+    const sock = MockWebSocket.last();
+    const logins = () =>
+      sock.sent.map((x) => JSON.parse(x as string)).filter((f) => f.event === '$auth:login').length;
+    const before = logins();
+
+    // Simulate a backgrounded leader: wall-clock jumps past the refresh
+    // interval, but the throttled timer never fires (setSystemTime does not run
+    // pending timers). On re-activation the catch-up must refresh.
+    vi.setSystemTime(Date.now() + 11_000);
+    doc.dispatch('visibilitychange');
+    await vi.advanceTimersByTimeAsync(1); // flush the async refresh
+
+    expect(logins()).toBeGreaterThan(before);
+
+    ws.disconnect();
+  });
 });

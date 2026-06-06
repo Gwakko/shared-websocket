@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Token refresh no longer lapses on a backgrounded leader.** The refresh ran
+  on a `setInterval`, which browsers throttle (and eventually freeze) in hidden
+  tabs — so a long-idle leader's token could expire before the next tick,
+  closing the socket with an auth-failure code. The refresh now uses a
+  self-rescheduling timer plus an elapsed-time **catch-up on re-activation**:
+  when the tab becomes visible and a refresh is overdue by ≥ one interval, it
+  refreshes immediately. An overlap guard prevents a double refresh when a
+  throttled tick and the catch-up fire close together.
+
 - **`ws.request()` from the leader tab no longer times out.** `request()`
   routed through `bus.request('ws:request')`, but the responder is registered
   only on the leader and `MessageBus` ignores requests from its own tab — so a

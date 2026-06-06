@@ -273,10 +273,15 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         const active = !document.hidden;
         this.subs.emit(LIFECYCLE.ACTIVE, active);
         this.log.debug('[SharedWS]', active ? '👁 tab active' : '👁 tab hidden');
-        // On re-activation, make sure the leader (and its socket) survived
-        // the idle period; take over if it didn't. Opt-out via recoverOnActivate.
-        if (active && (this.options.recoverOnActivate ?? true)) {
-          void this.coordinator.verifyLeader();
+        if (active) {
+          // Catch up a token refresh the throttled timer may have missed while
+          // backgrounded (leader-only; no-op otherwise).
+          this.auth.refreshIfStale();
+          // Make sure the leader (and its socket) survived the idle period;
+          // take over if it didn't. Opt-out via recoverOnActivate.
+          if (this.options.recoverOnActivate ?? true) {
+            void this.coordinator.verifyLeader();
+          }
         }
       };
       document.addEventListener('visibilitychange', onVisibilityChange);
