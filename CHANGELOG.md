@@ -47,8 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ws:request` responder teardown on demotion, `SubscriptionRegistry`
   refcounting + union replay, the auth surface (login/logout, cross-tab sync,
   reconnect re-auth, server revocation, token refresh), `PushManager`
-  notification routing, and `IncomingPipeline` frame transform. Run with
-  `npm test`.
+  notification routing, `IncomingPipeline` frame transform, and `sync()`
+  cross-tab state. Run with `npm test`.
 
 ### Added
 
