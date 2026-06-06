@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A leader that's bfcached or closed without `beforeunload` now relinquishes
+  the connection.** Cleanup hung off `beforeunload`, which doesn't fire on
+  mobile Safari, on tab discard, or when a page enters the back/forward cache —
+  so a leader could vanish while still "holding" the socket, leaving followers
+  to wait out the heartbeat timeout. Switched to `pagehide`: a real unload
+  (`persisted: false`) tears down as before, while entering bfcache
+  (`persisted: true`) abdicates leadership (without tearing down) so a live tab
+  takes over immediately, and `pageshow` restore re-enters the election.
+
 - **Token refresh no longer lapses on a backgrounded leader.** The refresh ran
   on a `setInterval`, which browsers throttle (and eventually freeze) in hidden
   tabs — so a long-idle leader's token could expire before the next tick,

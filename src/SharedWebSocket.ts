@@ -288,11 +288,35 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       this.cleanups.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));
     }
 
-    // Cleanup on tab close
+    // Cleanup on tab close. Use `pagehide` rather than `beforeunload`:
+    // beforeunload doesn't fire on mobile Safari, on tab discard, or when the
+    // page enters the back/forward cache, so a leader could vanish without
+    // ever relinquishing the socket. pagehide covers all of those.
     if (typeof window !== 'undefined') {
-      const onBeforeUnload = () => this[Symbol.dispose]();
-      window.addEventListener('beforeunload', onBeforeUnload);
-      this.cleanups.push(() => window.removeEventListener('beforeunload', onBeforeUnload));
+      const onPageHide = (e: PageTransitionEvent) => {
+        if (e.persisted) {
+          // Entering bfcache — frozen but may be restored. Don't tear down;
+          // just relinquish leadership so a live tab takes over the socket.
+          // We re-join coordination on `pageshow` if restored.
+          this.coordinator.abdicate();
+        } else {
+          // Real unload — full teardown.
+          this[Symbol.dispose]();
+        }
+      };
+      const onPageShow = (e: PageTransitionEvent) => {
+        // Restored from bfcache — re-enter the election (becomes leader if no
+        // other tab claimed it, otherwise settles back to follower).
+        if (e.persisted && !this.disposed) {
+          void this.coordinator.elect();
+        }
+      };
+      window.addEventListener('pagehide', onPageHide);
+      window.addEventListener('pageshow', onPageShow);
+      this.cleanups.push(() => {
+        window.removeEventListener('pagehide', onPageHide);
+        window.removeEventListener('pageshow', onPageShow);
+      });
     }
   }
 
