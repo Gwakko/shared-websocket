@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.16.0]
 
+### Internal
+
+- **Test harness.** Added a vitest suite (`test/`) with in-memory
+  `BroadcastChannel` and `WebSocket` mocks. Covers leader election, the
+  split-brain tie-break, health-verified takeover, the `heartbeatTimeout`
+  liveness watchdog, and the leader-local `request()` path. Run with
+  `npm test`.
+
 ### Added
 
 - **`heartbeatTimeout` — silently-dead socket detection.** The connection
