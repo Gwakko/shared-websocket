@@ -8,16 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
-- **Refactor: extracted `FramePipeline`, `Outbox`, `SubscriptionRegistry`,
-  `AuthManager`, and `PushManager` from `SharedWebSocket`.** The outgoing path
-  (build frame → middleware → socket write) is now `FramePipeline`; the
+- **Refactor: extracted `FramePipeline`, `IncomingPipeline`, `Outbox`,
+  `SubscriptionRegistry`, `AuthManager`, and `PushManager` from
+  `SharedWebSocket`.** The outgoing path (build frame → middleware → socket
+  write) is now `FramePipeline`; the receive path (incoming middleware → extract
+  event/data → per-event deserialize) is now `IncomingPipeline`; the
   at-least-once follower-dispatch buffer + cross-tab gather/replay is now
   `Outbox`; channel/topic bookkeeping (refcounts) plus the cross-tab
   subscription gather/replay-on-handover is now `SubscriptionRegistry`; runtime
   auth (login/logout, token refresh, re-auth on reconnect, server revocation,
   and the auth-scoped channel/topic auto-leave) is now `AuthManager`; and
   notification routing (render-vs-native, `target` tab selection) is now
-  `PushManager`. `SharedWebSocket` delegates to all five, shrinking the god
+  `PushManager`. `SharedWebSocket` delegates to all six, shrinking the god
   object and making those paths independently testable. No behavior or API
   change — the full suite passes unchanged. (The `push()` config type is now
   exported as `PushConfig`.)
@@ -44,8 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   visibility-driven takeover (and the `recoverOnActivate` opt-out), the
   `ws:request` responder teardown on demotion, `SubscriptionRegistry`
   refcounting + union replay, the auth surface (login/logout, cross-tab sync,
-  reconnect re-auth, server revocation, token refresh), and `PushManager`
-  notification routing. Run with `npm test`.
+  reconnect re-auth, server revocation, token refresh), `PushManager`
+  notification routing, and `IncomingPipeline` frame transform. Run with
+  `npm test`.
 
 ### Added
 

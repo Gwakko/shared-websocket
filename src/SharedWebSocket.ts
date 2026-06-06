@@ -6,6 +6,7 @@ import { SharedSocket } from './SharedSocket';
 import { WorkerSocket } from './WorkerSocket';
 import { SubscriptionManager } from './SubscriptionManager';
 import { FramePipeline } from './FramePipeline';
+import { IncomingPipeline } from './IncomingPipeline';
 import { Outbox } from './Outbox';
 import { SubscriptionRegistry } from './SubscriptionRegistry';
 import { AuthManager } from './AuthManager';
@@ -83,11 +84,11 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private readonly log: Logger;
   /** Outgoing frame building + middleware + socket write. */
   private readonly framePipeline: FramePipeline;
+  /** Incoming frame transform: middleware + extract + per-event deserialize. */
+  private readonly incoming: IncomingPipeline;
   /** At-least-once buffer + replay for follower-originated dispatches. */
   private readonly outbox: Outbox;
-  private incomingMiddleware: Middleware[] = [];
   private serializers = new Map<string, (data: unknown) => unknown>();
-  private deserializers = new Map<string, (data: unknown) => unknown>();
   /**
    * Channel/topic bookkeeping + cross-tab subscription replay. Holds the full
    * set used for incoming-event routing and leader-handover replay; auth-scoped
@@ -127,6 +128,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     // Outgoing pipeline + outbox. The outbox replays via the pipeline's
     // transmit, which writes to whatever socket the pipeline currently holds.
     this.framePipeline = new FramePipeline(this.proto, this.log);
+    this.incoming = new IncomingPipeline(this.proto, this.log);
     this.outbox = new Outbox(
       this.bus,
       options.outboundBufferSize ?? WS_DEFAULTS.OUTBOUND_BUFFER_SIZE,
@@ -492,7 +494,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     if (direction === 'outgoing') {
       this.framePipeline.use(fn);
     } else {
-      this.incomingMiddleware.push(fn);
+      this.incoming.use(fn);
     }
     return this;
   }
@@ -528,7 +530,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * ws.deserializer('trading.tick', (data) => TickProto.decode(data as Uint8Array));
    */
   deserializer(event: string, fn: (data: unknown) => unknown): this {
-    this.deserializers.set(event, fn);
+    this.incoming.deserializer(event, fn);
     return this;
   }
 
@@ -951,27 +953,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.auth.startRefresh();
 
     this.socket.onMessage((raw: unknown) => {
-      let data: unknown = raw;
-      for (const mw of this.incomingMiddleware) {
-        data = mw(data);
-        if (data === null) {
-          this.log.debug('[SharedWS] ✗ incoming dropped by middleware', { raw });
-          return;
-        }
-      }
-
-      const msg = data as Record<string, unknown> | null | undefined;
-      const event = (msg?.[this.proto.eventField] as string) ?? this.proto.defaultEvent;
-      let payload = msg?.[this.proto.dataField] ?? data;
-
-      // Per-event deserializer transforms data after global deserialize
-      const eventDeserializer = this.deserializers.get(event);
-      if (eventDeserializer) {
-        payload = eventDeserializer(payload);
-      }
-
-      this.log.debug('[SharedWS] ← recv', event, { data: payload, raw: data });
-      this.bus.broadcast(BUS.MESSAGE, { event, data: payload, raw: data });
+      const envelope = this.incoming.process(raw);
+      if (envelope) this.bus.broadcast(BUS.MESSAGE, envelope);
     });
 
     this.socket.onStateChange((state: string) => {
