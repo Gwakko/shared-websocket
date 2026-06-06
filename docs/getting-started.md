@@ -185,7 +185,7 @@ function App() {
 }
 
 function Dashboard() {
-  const ws = useSharedWebSocket();
+  const ws = useSharedWebSocket(); // SharedWebSocket | null — null until connected
 
   // Latest event value (reactive) — no need to pass ws, uses context
   const order = useSocketEvent<Order>('order.created');
@@ -203,7 +203,7 @@ function Dashboard() {
     <div>
       <p>Status: {connected ? 'Online' : 'Offline'} ({tabRole})</p>
       {order && <p>Latest order: #{order.id}</p>}
-      <button onClick={() => ws.send('ping', {})}>Ping</button>
+      <button onClick={() => ws?.send('ping', {})}>Ping</button>
       <button onClick={() => setCart({ items: [...cart.items, Date.now()] })}>
         Add to cart ({cart.items.length})
       </button>

@@ -4,6 +4,43 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.3]
+
+### Changed
+
+- **The React provider now owns one `SharedWebSocket` per provider via
+  `useSyncExternalStore`.** A per-provider store creates the instance on the
+  first subscriber (commit-time, never during a render) and disposes it when the
+  last subscriber leaves — so there is exactly one instance per provider, and a
+  render React throws away never constructs anything.
+
+- **BREAKING (React types): `useSharedWebSocket()` now returns
+  `SharedWebSocket | null`.** The instance is `null` until the provider's socket
+  is created (the first render, and SSR). The feature hooks (`useSocketEvent`,
+  `useSocketSync`, `useChannel`, …) handle the null internally and attach as soon
+  as the socket is ready, so typical app code is unaffected — but direct callers
+  of `useSharedWebSocket()` must now handle `null`.
+
+- **BREAKING (React types): `useChannel()` now returns `Channel | null`** (null
+  until the channel is joined, once the socket exists).
+
+### Added
+
+- **`useSharedWebSocketOrThrow()`** — non-null accessor for imperative call sites
+  (event handlers, effects) that need the instance and run after the provider has
+  mounted. Throws if used before the socket is ready (e.g. during the first
+  render).
+
+### Internal
+
+- **React and Vue adapters reorganized into per-framework folders**
+  (`src/adapters/react/`, `src/adapters/vue/`). The monolithic `react.ts` /
+  `vue.ts` were split into per-concern modules (`context`/`plugin`, `auth`,
+  `events`, `state`, `status`, `subscriptions`) plus `sync.ts`, each re-exported
+  from a barrel `index.ts`. Public entry points are unchanged
+  (`@gwakko/shared-websocket/react`, `/vue`, `/sync/react`, `/sync/vue`), and the
+  Vue adapter's behavior/exports are unchanged.
+
 ## [0.16.0]
 
 ### Internal

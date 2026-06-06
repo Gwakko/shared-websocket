@@ -145,10 +145,10 @@ ws.send('group.member_ready',
 import { useSharedWebSocket } from '@gwakko/shared-websocket/react';
 
 function ReadyButton({ groupId }: { groupId: string }) {
-  const ws = useSharedWebSocket();
+  const ws = useSharedWebSocket(); // SharedWebSocket | null — null until connected
   return (
-    <button onClick={() =>
-      ws.send('group.member_ready',
+    <button disabled={!ws} onClick={() =>
+      ws?.send('group.member_ready',
         { member_id: currentUserId, ready: true },
         { type: 'event', channel: `public.group.${groupId}` },
       )
@@ -447,14 +447,15 @@ try {
 **React — gate handler attach on `ready`:**
 
 ```tsx
-import { useChannel, useSharedWebSocket } from '@gwakko/shared-websocket/react';
+import { useChannel } from '@gwakko/shared-websocket/react';
 import { useEffect, useState } from 'react';
 
 function Room({ id }: { id: string }) {
-  const chat = useChannel(`rooms:${id}`);
+  const chat = useChannel(`rooms:${id}`); // Channel | null — null until joined
   const [status, setStatus] = useState<'pending' | 'ok' | 'reject'>('pending');
 
   useEffect(() => {
+    if (!chat) return;
     let alive = true;
     chat.ready
       .then(() => alive && setStatus('ok'))
@@ -1016,8 +1017,9 @@ function UserProfile({ userId }: { userId: string }) {
   const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
+    if (!ws) return;
     ws.request<User>('user.profile', { id: userId }).then(setUser);
-  }, [userId]);
+  }, [ws, userId]);
 
   return user ? <div>{user.name}</div> : <div>Loading...</div>;
 }
@@ -1111,7 +1113,7 @@ function FileUploader() {
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !ws) return;
 
     setUploading(true);
     setProgress(0);
@@ -1124,7 +1126,7 @@ function FileUploader() {
 
   return (
     <div>
-      <input type="file" onChange={handleUpload} disabled={uploading} />
+      <input type="file" onChange={handleUpload} disabled={uploading || !ws} />
       {uploading && (
         <div className="progress-bar">
           <div style={{ width: `${progress}%` }} />

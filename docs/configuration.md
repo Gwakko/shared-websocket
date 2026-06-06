@@ -124,7 +124,7 @@ function App() {
       toast.error('Connection lost', {
         id: 'ws',
         duration: Infinity,
-        action: { label: 'Reconnect', onClick: () => ws.reconnect() },
+        action: { label: 'Reconnect', onClick: () => ws?.reconnect() },
       });
     },
   });
@@ -365,6 +365,7 @@ function SetupSerializers() {
   const ws = useSharedWebSocket();
 
   useEffect(() => {
+    if (!ws) return;
     ws.serializer('file.upload', (data) => data as ArrayBuffer);
     ws.deserializer('file.download', (data) => new Uint8Array(data as ArrayBuffer));
   }, [ws]);
@@ -946,6 +947,7 @@ function SetupMiddleware() {
   const ws = useSharedWebSocket();
 
   useEffect(() => {
+    if (!ws) return;
     ws.use('outgoing', (msg) => ({ ...msg, timestamp: Date.now() }));
     ws.use('incoming', zodValidate(MessageSchema));
   }, [ws]);

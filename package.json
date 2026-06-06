@@ -1,6 +1,6 @@
 {
   "name": "@gwakko/shared-websocket",
-  "version": "0.16.0",
+  "version": "0.17.3",
   "description": "Share ONE WebSocket connection across browser tabs — leader election, BroadcastChannel sync, optional Web Worker",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -13,12 +13,12 @@
       "require": "./dist/index.cjs"
     },
     "./react": {
-      "types": "./dist/adapters/react.d.ts",
+      "types": "./dist/adapters/react/index.d.ts",
       "import": "./dist/react.js",
       "require": "./dist/react.cjs"
     },
     "./vue": {
-      "types": "./dist/adapters/vue.d.ts",
+      "types": "./dist/adapters/vue/index.d.ts",
       "import": "./dist/vue.js",
       "require": "./dist/vue.cjs"
     },
@@ -28,12 +28,12 @@
       "require": "./dist/sync.cjs"
     },
     "./sync/react": {
-      "types": "./dist/adapters/sync-react.d.ts",
+      "types": "./dist/adapters/react/sync.d.ts",
       "import": "./dist/sync-react.js",
       "require": "./dist/sync-react.cjs"
     },
     "./sync/vue": {
-      "types": "./dist/adapters/sync-vue.d.ts",
+      "types": "./dist/adapters/vue/sync.d.ts",
       "import": "./dist/sync-vue.js",
       "require": "./dist/sync-vue.cjs"
     }

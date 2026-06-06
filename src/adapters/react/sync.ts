@@ -7,7 +7,7 @@ import {
   type ReactNode,
   createElement,
 } from 'react';
-import { TabSync } from '../TabSync';
+import { TabSync } from '../../TabSync';
 
 // ─── Context ─────────────────────────────────────────────
 

@@ -129,9 +129,12 @@ See [Runtime Authentication](./features.md#runtime-authentication) for full exam
 
 All hooks use context internally — no need to pass `ws`. Every hook accepts an **optional callback** for custom handling.
 
+The provider owns **one `SharedWebSocket` per provider** (via `useSyncExternalStore`), created on mount and disposed on unmount. The instance is `null` until it is created (first render and SSR), so `useSharedWebSocket()` is nullable and the feature hooks below handle the null internally — they attach as soon as the socket is ready. For imperative call sites that need the instance, use `useSharedWebSocketOrThrow()`.
+
 | Hook | Without callback | With callback |
 |------|-----------------|---------------|
-| `useSharedWebSocket()` | `SharedWebSocket` | — |
+| `useSharedWebSocket()` | `SharedWebSocket \| null` (null until ready) | — |
+| `useSharedWebSocketOrThrow()` | `SharedWebSocket` (throws if not ready — imperative sites only) | — |
 | `useSocketEvent<T>(event, cb?)` | Returns `T \| undefined` | `cb(data)` on each event |
 | `useSocketStream<T>(event, cb?)` | Returns `T[]` (accumulated) | `cb(data)` — manage your own state |
 | `useSocketSync<T>(key, init, cb?)` | Returns `[T, setter]` | `cb(value)` — side effects on sync |
@@ -140,7 +143,7 @@ All hooks use context internally — no need to pass `ws`. Every hook accepts an
 | `useSocketStatus()` | `{ connected, tabRole, isAuthenticated }` | — |
 | `useSocketLifecycle(handlers)` | — | onConnect, onDisconnect, onReconnecting, onReconnectFailed, onLeaderChange, onError, onAuthChange |
 | `useSocketReconnect()` | `{ hasFailed, reconnect }` | Drive a "Reconnect" snackbar after retries are exhausted |
-| `useChannel(name, opts?)` | `Channel` handle | Auto-join/leave, `{ auth: true }` for auth-aware |
+| `useChannel(name, opts?)` | `Channel \| null` (null until joined) | Auto-join/leave, `{ auth: true }` for auth-aware |
 
 ```tsx
 // Without callback — reactive state

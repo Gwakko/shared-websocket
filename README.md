@@ -92,6 +92,7 @@ await withSocket('wss://api.example.com/ws', {
 import {
   SharedWebSocketProvider,
   useSharedWebSocket,
+  useSharedWebSocketOrThrow,
   useSocketAuth,
   useSocketEvent,
   useSocketStream,
@@ -116,7 +117,9 @@ function App() {
 }
 
 function Dashboard() {
-  const ws = useSharedWebSocket();
+  // The provider owns ONE socket per provider, created on mount via an external
+  // store. The feature hooks below attach as soon as it's ready — no null checks
+  // needed in app code.
   const { isAuthenticated, authenticate, deauthenticate } = useSocketAuth();
   const order = useSocketEvent<Order>('order.created');
   const [cart, setCart] = useSocketSync('cart', { items: [] });
@@ -134,7 +137,7 @@ function Dashboard() {
     onAuthChange: (auth) => !auth && navigate('/login'),
   });
 
-  // Auth-aware channel — auto-leaves on deauth
+  // Auth-aware channel — auto-leaves on deauth. `null` until joined.
   const chat = useChannel(`chat:${roomId}`, { auth: true });
 
   // Topics
@@ -147,6 +150,26 @@ function Dashboard() {
   });
 
   return <div>{connected ? 'Online' : 'Offline'} ({tabRole})</div>;
+}
+
+// Raw instance access. useSharedWebSocket() is `SharedWebSocket | null` — null
+// until the provider's instance connects (first render + SSR). Guard it:
+function PingButton() {
+  const ws = useSharedWebSocket();
+  return <button disabled={!ws} onClick={() => ws?.send('ping', {})}>Ping</button>;
+}
+
+// useSharedWebSocketOrThrow() returns a non-null instance, but THROWS if the
+// socket isn't ready yet — so only use it in components that render after the
+// socket exists (e.g. gated behind a ready/connected check), or inside effects:
+function GatedToolbar() {
+  const ws = useSharedWebSocket();
+  if (!ws) return null;          // mounted children are guaranteed a socket
+  return <ToolbarBody />;
+}
+function ToolbarBody() {
+  const ws = useSharedWebSocketOrThrow(); // safe — only rendered once ws exists
+  return <button onClick={() => ws.send('ping', {})}>Ping</button>;
 }
 ```
 

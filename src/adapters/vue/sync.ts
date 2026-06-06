@@ -8,7 +8,7 @@ import {
   type InjectionKey,
   type App,
 } from 'vue';
-import { TabSync } from '../TabSync';
+import { TabSync } from '../../TabSync';
 
 // ─── Plugin ──────────────────────────────────────────────
 
