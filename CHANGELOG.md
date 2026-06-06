@@ -8,12 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
-- **Refactor: extracted `FramePipeline` and `Outbox` from `SharedWebSocket`.**
-  The outgoing path (build frame → middleware → socket write) is now
-  `FramePipeline`; the at-least-once follower-dispatch buffer + cross-tab
-  gather/replay is now `Outbox`. `SharedWebSocket` delegates to both, shrinking
-  the god object and making those paths independently testable. No behavior or
-  API change — the full suite passes unchanged.
+- **Refactor: extracted `FramePipeline`, `Outbox`, and `SubscriptionRegistry`
+  from `SharedWebSocket`.** The outgoing path (build frame → middleware → socket
+  write) is now `FramePipeline`; the at-least-once follower-dispatch buffer +
+  cross-tab gather/replay is now `Outbox`; channel/topic bookkeeping (refcounts)
+  plus the cross-tab subscription gather/replay-on-handover is now
+  `SubscriptionRegistry`. `SharedWebSocket` delegates to all three, shrinking the
+  god object and making those paths independently testable. No behavior or API
+  change — the full suite passes unchanged.
 
 - **Centralized magic values in `src/constants.ts`.** All internal
   `BroadcastChannel` topic names (`coord:*`, `ws:*`), `SubscriptionManager`
@@ -29,8 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   liveness watchdog, the leader-local `request()` path, and the
   outbox/handover machinery (follower→leader routing, subscription replay on
   promotion, pending-event replay, and no-duplicate-after-flush),
-  visibility-driven takeover (and the `recoverOnActivate` opt-out), and the
-  `ws:request` responder teardown on demotion. Run with `npm test`.
+  visibility-driven takeover (and the `recoverOnActivate` opt-out), the
+  `ws:request` responder teardown on demotion, and `SubscriptionRegistry`
+  refcounting + union replay. Run with `npm test`.
 
 ### Added
 

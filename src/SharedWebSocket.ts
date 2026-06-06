@@ -7,7 +7,8 @@ import { WorkerSocket } from './WorkerSocket';
 import { SubscriptionManager } from './SubscriptionManager';
 import { FramePipeline } from './FramePipeline';
 import { Outbox } from './Outbox';
-import { BUS, LIFECYCLE, AUTH_TOKEN_KEY, WS_DEFAULTS, busSubsReply, MESSAGE_BUS_CHANNEL } from './constants';
+import { SubscriptionRegistry } from './SubscriptionRegistry';
+import { BUS, LIFECYCLE, AUTH_TOKEN_KEY, WS_DEFAULTS, MESSAGE_BUS_CHANNEL } from './constants';
 import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol, EventMap, Logger, Middleware, FrameKind, FramePayload, ChannelAckResult } from './types';
 
 const DEFAULT_PROTOCOL: EventProtocol = {
@@ -87,14 +88,11 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private authChannels = new Map<string, Channel>();
   private authTopics = new Set<string>();
   /**
-   * Refcount of active channel subscriptions per name. Used to route
-   * incoming events back to channel handlers via `${name}<RS>${event}`
-   * keys without colliding when names/events contain `:`, and as the
-   * source for cross-tab subscription replay on leader change.
+   * Channel/topic bookkeeping + cross-tab subscription replay. Holds the full
+   * set used for incoming-event routing and leader-handover replay; the
+   * auth-only sets above are tracked separately for auto-leave on deauth.
    */
-  private channelRefs = new Map<string, number>();
-  /** All topic subscriptions (auth and non-auth). Replayed on leader change. */
-  private topics = new Set<string>();
+  private readonly subscriptions: SubscriptionRegistry;
   /** Listeners for every raw incoming frame (post-deserialize, post-middleware). */
   private rawFrameListeners = new Set<(raw: unknown) => void>();
   /** Periodic refresh timer — leader only. Recreated on each leader handover. */
@@ -132,6 +130,11 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       (kind, payload) => this.framePipeline.transmit(kind, payload),
       this.log,
     );
+    this.subscriptions = new SubscriptionRegistry(
+      this.bus,
+      (kind, payload) => this.framePipeline.transmit(kind, payload),
+      this.log,
+    );
 
     // Let the coordinator decide leader health from real socket state — a
     // backgrounded leader with a dead socket fails this check and is taken
@@ -157,7 +160,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         // prefix of the incoming event (separated by ':'), also fire handlers
         // stored under `${name}<RS>${rest}`. This lets `Channel.on('msg', h)`
         // receive a wire event like 'chat:room:42:msg' without colon parsing.
-        for (const channelName of this.channelRefs.keys()) {
+        for (const channelName of this.subscriptions.channelNames()) {
           const prefix = channelName + ':';
           if (msg.event.length > prefix.length && msg.event.startsWith(prefix)) {
             const subEvent = msg.event.slice(prefix.length);
@@ -214,16 +217,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       }),
     );
 
-    // Each tab announces its channels/topics on request. Used on leader
-    // promotion or reconnect to rebuild the server-side subscription set.
-    this.cleanups.push(
-      this.bus.subscribe<{ replyId: string }>(BUS.GATHER_SUBS, (req) => {
-        this.bus.publish(busSubsReply(req.replyId), {
-          channels: [...this.channelRefs.keys()],
-          topics: [...this.topics],
-        });
-      }),
-    );
+    // (The channels/topics gather responder lives in SubscriptionRegistry.)
 
     // Sync across tabs
     this.cleanups.push(
@@ -765,7 +759,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.dispatch('subscribe', { channel: name });
 
     // Track this channel for incoming-event prefix routing
-    this.channelRefs.set(name, (this.channelRefs.get(name) ?? 0) + 1);
+    this.subscriptions.addChannel(name);
 
     const self = this;
     const unsubs: Unsubscribe[] = [];
@@ -807,9 +801,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         for (const unsub of unsubs) unsub();
         unsubs.length = 0;
         if (isAuth) self.authChannels.delete(name);
-        const next = (self.channelRefs.get(name) ?? 1) - 1;
-        if (next <= 0) self.channelRefs.delete(name);
-        else self.channelRefs.set(name, next);
+        self.subscriptions.removeChannel(name);
       },
     };
 
@@ -833,7 +825,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    */
   subscribe(topic: string, options?: { auth?: boolean }): void {
     this.dispatch('topic-subscribe', { topic });
-    this.topics.add(topic);
+    this.subscriptions.addTopic(topic);
     if (options?.auth) {
       this.authTopics.add(topic);
     }
@@ -846,7 +838,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    */
   unsubscribe(topic: string): void {
     this.dispatch('topic-unsubscribe', { topic });
-    this.topics.delete(topic);
+    this.subscriptions.removeTopic(topic);
     this.authTopics.delete(topic);
     this.log.debug('[SharedWS] unsubscribe topic', topic);
   }
@@ -1127,72 +1119,26 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * leader's socket.
    */
   private async onConnected(): Promise<void> {
-    await this.resubscribeOnConnect();
-    // Drain follower-pending dispatches that didn't reach the previous leader.
-    // Bail if leadership/socket changed again while the outbox was gathering.
-    const socket = this.socket;
-    await this.outbox.replay(() => this.socket === socket);
-  }
-
-  private async resubscribeOnConnect(): Promise<void> {
     if (!this.socket) return;
     const socket = this.socket;
+    const stillValid = () => this.socket === socket;
 
     // 1. Re-authenticate first so subsequent auth-channel joins succeed.
-    if (this._isAuthenticated) {
-      const token = this.syncStore.get(AUTH_TOKEN_KEY) as string | undefined;
-      if (token) {
-        this.framePipeline.transmit('auth-login', { data: token });
-        this.log.debug('[SharedWS] re-authenticated after reconnect');
-      }
-    }
-
-    // 2/3. Gather subscriptions from all surviving tabs (including self).
-    const { channels, topics } = await this.gatherSubscriptions();
-    if (this.socket !== socket) return; // socket replaced while we were waiting
-
-    for (const name of channels) {
-      this.framePipeline.transmit('subscribe', { channel: name });
-    }
-    for (const topic of topics) {
-      this.framePipeline.transmit('topic-subscribe', { topic });
-    }
-
-    if (channels.length || topics.length) {
-      this.log.info('[SharedWS] replayed subscriptions', {
-        channels: channels.length,
-        topics: topics.length,
-      });
-    }
+    this.reauthenticate();
+    // 2. Replay the union of channels/topics across all surviving tabs.
+    await this.subscriptions.replay(stillValid);
+    // 3. Drain follower-pending dispatches that didn't reach the old leader.
+    await this.outbox.replay(stillValid);
   }
 
-  /**
-   * Best-effort cross-tab gather. Broadcasts a request and collects responses
-   * for a short window. Times out gracefully — late responses are dropped.
-   * The leader's own subs are seeded into the result to avoid relying on
-   * BroadcastChannel echo to self.
-   */
-  private gatherSubscriptions(timeoutMs: number = WS_DEFAULTS.GATHER_SUBS_TIMEOUT): Promise<{ channels: string[]; topics: string[] }> {
-    const channels = new Set<string>(this.channelRefs.keys());
-    const topics = new Set<string>(this.topics);
-    const replyId = generateId();
-
-    return new Promise((resolve) => {
-      const unsub = this.bus.subscribe<{ channels: string[]; topics: string[] }>(
-        busSubsReply(replyId),
-        (msg) => {
-          for (const c of msg.channels) channels.add(c);
-          for (const t of msg.topics) topics.add(t);
-        },
-      );
-
-      this.bus.publish(BUS.GATHER_SUBS, { replyId });
-
-      setTimeout(() => {
-        unsub();
-        resolve({ channels: [...channels], topics: [...topics] });
-      }, timeoutMs);
-    });
+  /** Re-send the auth-login frame from synced state after a fresh connect. */
+  private reauthenticate(): void {
+    if (!this._isAuthenticated) return;
+    const token = this.syncStore.get(AUTH_TOKEN_KEY) as string | undefined;
+    if (token) {
+      this.framePipeline.transmit('auth-login', { data: token });
+      this.log.debug('[SharedWS] re-authenticated after reconnect');
+    }
   }
 
   private handleLoseLeadership(): void {
@@ -1253,6 +1199,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
     this.coordinator[Symbol.dispose]();
     this.outbox[Symbol.dispose]();
+    this.subscriptions[Symbol.dispose]();
     this.framePipeline.setSocket(null);
 
     if (this.socket) {
@@ -1267,8 +1214,6 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.syncStore.clear();
     this.authChannels.clear();
     this.authTopics.clear();
-    this.channelRefs.clear();
-    this.topics.clear();
     this.rawFrameListeners.clear();
   }
 }
