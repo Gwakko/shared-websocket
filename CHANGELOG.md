@@ -4,6 +4,42 @@ All notable changes to `@gwakko/shared-websocket` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0]
+
+### Added
+
+- **`heartbeatTimeout` — silently-dead socket detection.** The connection
+  heartbeat was send-only: it pushed a ping every `heartbeatInterval` but never
+  checked for a reply, so a connection dropped without a close frame (sleep,
+  Wi-Fi→cellular, captive portal, NAT timeout) stayed `connected` until the OS
+  TCP timeout fired `onclose` — minutes, sometimes never. This also meant the
+  new leader health check could see a zombie as "connected." Set
+  `heartbeatTimeout` (ms) to force-reconnect when no inbound message (server
+  data or pong) arrives within the window. Opt-in (default `0`), works in both
+  main-thread and worker modes. Requires the server to send periodic data or
+  answer the ping.
+
+### Fixed
+
+- **`ws.request()` from the leader tab no longer times out.** `request()`
+  routed through `bus.request('ws:request')`, but the responder is registered
+  only on the leader and `MessageBus` ignores requests from its own tab — so a
+  leader calling `request()` got no answer and always hit the 5s timeout.
+  The owning tab now resolves requests locally against its socket.
+
+- **`ws:request` responder leak across leader handover.** The responder was
+  registered on promotion but never removed on demotion. A demoted tab kept
+  answering with a null socket (throwing), and each re-promotion stacked
+  another responder — sending the request to the server multiple times. It's
+  now torn down on every leadership loss and re-registered cleanly.
+
+- **Election split-brain on simultaneous candidates.** Two tabs running
+  `elect()` at the same instant both saw no rejection and both became leader
+  (two sockets). Elections now carry the candidate's tabId and a lower-tabId
+  candidate deterministically pre-empts a higher one, so concurrent elections
+  converge on a single leader. This also hardens the new active-tab takeover,
+  where several tabs can detect a dead leader at once.
+
 ## [0.15.0]
 
 ### Added

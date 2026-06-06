@@ -101,6 +101,13 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private pendingOutbound = new Map<string, { id: string; kind: FrameKind; payload: FramePayload; enqueuedAt: number }>();
   /** Periodic refresh timer — leader only. Recreated on each leader handover. */
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Unsubscribe for the leader-only `ws:request` responder. Tracked separately
+   * from `cleanups` so it can be torn down on EACH leadership loss — otherwise
+   * a demoted tab keeps answering requests with a null socket, and every
+   * re-promotion stacks another responder (duplicate server sends).
+   */
+  private requestResponderCleanup: Unsubscribe | null = null;
 
   constructor(
     private readonly url: string,
@@ -650,7 +657,48 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
   /** Request/response through server via leader. */
   async request<T>(event: string, data: unknown, timeout = 5000): Promise<T> {
-    return this.bus.request('ws:request', { event, data }, timeout);
+    // If THIS tab owns the socket, answer locally. Routing through the bus
+    // would dead-end: `bus.respond` ignores requests from its own tabId, so a
+    // leader calling request() would never get a response and always time out.
+    if (this.coordinator.isLeader && this.socket) {
+      return this.performRequest(event, data, timeout) as Promise<T>;
+    }
+    return this.bus.request('ws:request', { event, data, timeout }, timeout);
+  }
+
+  /**
+   * Leader-side request/response over the live socket. Sends the event, then
+   * resolves with the first matching response frame (matched by event name or
+   * a `requestId` field), or rejects on timeout. Used by both the local
+   * `request()` fast-path and the `ws:request` responder for followers.
+   */
+  private performRequest(event: string, data: unknown, timeout: number): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const socket = this.socket;
+      if (!socket) {
+        reject(new Error('SharedWebSocket.request: no socket on leader'));
+        return;
+      }
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsub();
+        fn();
+      };
+      const unsub = socket.onMessage((response: unknown) => {
+        const res = response as Record<string, unknown> | undefined;
+        if (res?.[this.proto.eventField] === event || res?.requestId) {
+          finish(() => resolve(res?.[this.proto.dataField] ?? response));
+        }
+      });
+      const timer = setTimeout(
+        () => finish(() => reject(new Error(`SharedWebSocket.request: timeout for "${event}"`))),
+        timeout,
+      );
+      this.transmit('event', { event, data });
+    });
   }
 
   /** Sync state across tabs (no server roundtrip). */
@@ -1099,6 +1147,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       reconnectMaxRetries: this.options.reconnectMaxRetries,
       authFailureCloseCodes: this.options.authFailureCloseCodes,
       heartbeatInterval: this.options.heartbeatInterval,
+      heartbeatTimeout: this.options.heartbeatTimeout,
       sendBuffer: this.options.sendBuffer,
       pingPayload: this.proto.ping,
     };
@@ -1174,19 +1223,16 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       }
     });
 
-    this.cleanups.push(
-      this.bus.respond<{ event: string; data: unknown }, unknown>('ws:request', async (req) => {
-        return new Promise((resolve) => {
-          const unsub = this.socket!.onMessage((response: unknown) => {
-            const res = response as Record<string, unknown> | undefined;
-            if (res?.[this.proto.eventField] === req.event || res?.requestId) {
-              unsub();
-              resolve(res?.[this.proto.dataField] ?? response);
-            }
-          });
-          this.transmit('event', { event: req.event, data: req.data });
-        });
-      }),
+    // Replace any stale responder from a previous promotion, then register a
+    // fresh one bound to the new socket. Stored outside `cleanups` so it's torn
+    // down on leadership loss (see handleLoseLeadership).
+    this.requestResponderCleanup?.();
+    this.requestResponderCleanup = this.bus.respond<{ event: string; data: unknown; timeout?: number }, unknown>(
+      'ws:request',
+      // Swallow a rejection (timeout / no socket) to undefined: the follower
+      // that asked has its own bus.request timeout and will have given up, so
+      // the late response is dropped anyway. Avoids an unhandled rejection.
+      (req) => this.performRequest(req.event, req.data, req.timeout ?? 5000).catch(() => undefined),
     );
 
     void this.socket.connect();
@@ -1331,6 +1377,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
   private handleLoseLeadership(): void {
     this.stopRefreshTimer();
+    this.requestResponderCleanup?.();
+    this.requestResponderCleanup = null;
     if (this.socket) {
       this.socket[Symbol.dispose]();
       this.socket = null;
@@ -1379,6 +1427,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     if (this.disposed) return;
     this.disposed = true;
     this.stopRefreshTimer();
+    this.requestResponderCleanup?.();
+    this.requestResponderCleanup = null;
 
     this.coordinator[Symbol.dispose]();
 

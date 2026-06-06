@@ -248,10 +248,42 @@ which together cover every layout:
   blindly re-elected, so a zombie leader could still reject the election and
   leave the connection stuck.)
 
-> The only case neither trigger can catch is a leader that *keeps
-> heartbeating at full speed* (e.g. visible on a second monitor) yet has a
-> silently-dead socket. That's detected and self-healed one layer down by
-> the socket's own `heartbeatInterval` ping/pong + auto-reconnect.
+> The remaining case — a leader that *keeps running at full speed* (e.g.
+> visible on a second monitor) yet whose socket has *silently died* (no close
+> frame) — is **not** caught by leader verification, because the leader still
+> reports `state === 'connected'` and answers the ping. Detecting that
+> requires the socket-level liveness watchdog: set **`heartbeatTimeout`** (see
+> below). Without it, the dead socket lingers until the OS TCP timeout
+> eventually fires `onclose` (often minutes).
+
+### `heartbeatTimeout` — detect silently-dead sockets
+
+The connection heartbeat (`heartbeatInterval`, default 30s) is **send-only by
+default** — it pushes a ping but never checks for a reply. A connection that
+dies without a close frame (laptop sleep, Wi-Fi → cellular handoff, captive
+portal, NAT timeout) therefore stays `connected` in the library's eyes until
+the OS gives up on the TCP socket, which can take minutes.
+
+Set `heartbeatTimeout` (ms) to enable a watchdog: if **no inbound message**
+(server data *or* a pong) arrives within the window, the socket force-
+reconnects immediately.
+
+```typescript
+const ws = new SharedWebSocket('wss://api.example.com/ws', {
+  heartbeatInterval: 15000,  // send a ping every 15s
+  heartbeatTimeout: 35000,   // ...reconnect if nothing comes back in 35s
+});
+```
+
+Requirements & guidance:
+- Your server must send periodic data **or** answer the heartbeat ping (any
+  inbound frame resets the timer). If the server can be legitimately silent
+  for long stretches and never pongs, leave this disabled or it will
+  reconnect spuriously.
+- Set it comfortably above `heartbeatInterval` (≈2–3×) to tolerate one missed
+  beat plus latency.
+- Default: **disabled** (`0`) — preserves the legacy fire-and-forget behavior.
+- Works in both main-thread and `useWorker: true` modes.
 
 This is **on by default** — no configuration needed. Two knobs tune it:
 

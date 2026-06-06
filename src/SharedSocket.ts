@@ -11,6 +11,14 @@ interface SharedSocketOptions {
   /** Close codes that mean "auth failed — stop reconnect." Default: [1008]. */
   authFailureCloseCodes?: number[];
   heartbeatInterval?: number;
+  /**
+   * Liveness watchdog. When `> 0`, the socket force-reconnects if NO inbound
+   * message (server data or a pong) arrives within this many ms. Detects
+   * silently-dropped connections that never fire `onclose` (sleep, network
+   * switch, captive portal). Requires the server to send periodic data or
+   * answer the heartbeat ping. Default: disabled (legacy fire-and-forget).
+   */
+  heartbeatTimeout?: number;
   sendBuffer?: number;
   auth?: () => string | Promise<string>;
   authToken?: string;
@@ -30,14 +38,17 @@ export class SharedSocket implements Disposable {
   private disposed = false;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Timestamp of the last inbound message — drives the liveness watchdog. */
+  private lastInboundAt = 0;
 
   private onMessageFns = new Set<EventHandler>();
   private onStateChangeFns = new Set<(state: SocketState) => void>();
 
   private reconnectAttempts = 0;
 
-  private readonly opts: Required<Omit<SharedSocketOptions, 'auth' | 'authToken' | 'authParam' | 'pingPayload' | 'serialize' | 'deserialize' | 'authFailureCloseCodes'>> & {
+  private readonly opts: Required<Omit<SharedSocketOptions, 'auth' | 'authToken' | 'authParam' | 'pingPayload' | 'serialize' | 'deserialize' | 'authFailureCloseCodes' | 'heartbeatTimeout'>> & {
     authFailureCloseCodes: ReadonlySet<number>;
+    heartbeatTimeout: number;
     auth?: () => string | Promise<string>;
     authToken?: string;
     authParam: string;
@@ -57,6 +68,7 @@ export class SharedSocket implements Disposable {
       reconnectMaxRetries: options.reconnectMaxRetries ?? Infinity,
       authFailureCloseCodes: new Set(options.authFailureCloseCodes ?? [1008]),
       heartbeatInterval: options.heartbeatInterval ?? 30_000,
+      heartbeatTimeout: options.heartbeatTimeout ?? 0,
       sendBuffer: options.sendBuffer ?? 100,
       auth: options.auth,
       authToken: options.authToken,
@@ -93,12 +105,14 @@ export class SharedSocket implements Disposable {
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
+      this.lastInboundAt = Date.now();
       this.setState('connected');
       this.flushBuffer();
       this.startHeartbeat();
     };
 
     this.ws.onmessage = (ev: MessageEvent) => {
+      this.lastInboundAt = Date.now();
       let data: unknown;
       try {
         data = this.opts.deserialize(ev.data as string | ArrayBuffer);
@@ -222,6 +236,17 @@ export class SharedSocket implements Disposable {
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
+      // Liveness watchdog: if enabled and we've heard nothing back within the
+      // window, the connection is silently dead (no close frame ever came).
+      // Force a reconnect rather than sending into the void forever.
+      if (
+        this.opts.heartbeatTimeout > 0 &&
+        this._state === 'connected' &&
+        Date.now() - this.lastInboundAt > this.opts.heartbeatTimeout
+      ) {
+        this.reconnect();
+        return;
+      }
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(this.opts.serialize(this.opts.pingPayload));
       }

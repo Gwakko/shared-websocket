@@ -32,6 +32,13 @@ export class TabCoordinator implements Disposable {
   private healthCheck: (() => boolean) | null = null;
   /** Re-entrancy guard so rapid visibility toggles don't stack verifications. */
   private verifying = false;
+  /**
+   * Set while an election is in flight. Lets a concurrent election from a
+   * tab with a lower tabId pre-empt this one (deterministic tie-break) so two
+   * tabs electing at the same instant can't both become leader (split-brain).
+   * Calling it makes this tab yield and become a follower.
+   */
+  private electionAbort: (() => void) | null = null;
 
   private readonly electionTimeout: number;
   private readonly heartbeatInterval: number;
@@ -48,11 +55,16 @@ export class TabCoordinator implements Disposable {
     this.leaderTimeout = options.leaderTimeout ?? 5000;
     this.leaderPingTimeout = options.leaderPingTimeout ?? 1500;
 
-    // Listen for election requests — reject if we are leader
+    // Listen for election requests. If we're already leader, reject so the
+    // candidate backs off. If we're mid-election ourselves, the candidate
+    // with the smaller tabId wins and we yield — a deterministic tie-break
+    // that prevents two simultaneous electors from both becoming leader.
     this.cleanups.push(
-      this.bus.subscribe<{ tabId: string }>('coord:election', () => {
+      this.bus.subscribe<{ tabId: string }>('coord:election', (msg) => {
         if (this._isLeader) {
           this.bus.publish('coord:reject', { tabId: this.tabId });
+        } else if (this.electionAbort && msg.tabId < this.tabId) {
+          this.electionAbort();
         }
       }),
     );
@@ -107,25 +119,32 @@ export class TabCoordinator implements Disposable {
     if (this.disposed) return;
 
     return new Promise<void>((resolve) => {
-      let rejected = false;
+      let settled = false;
 
-      const unsub = this.bus.subscribe('coord:reject', () => {
-        rejected = true;
+      // `won` true → become leader; false → yield and monitor as follower.
+      const finish = (won: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         unsub();
-        // We are follower — start monitoring leader heartbeat
-        this.startLeaderCheck();
+        this.electionAbort = null;
+        if (this.disposed) {
+          resolve();
+          return;
+        }
+        if (won) this.becomeLeader();
+        else this.startLeaderCheck();
         resolve();
-      });
+      };
+
+      // A live leader rejected us, OR a lower-tabId concurrent candidate
+      // pre-empted us — either way we step back and become a follower.
+      const unsub = this.bus.subscribe('coord:reject', () => finish(false));
+      this.electionAbort = () => finish(false);
 
       this.bus.publish('coord:election', { tabId: this.tabId });
 
-      setTimeout(() => {
-        unsub();
-        if (!rejected && !this.disposed) {
-          this.becomeLeader();
-        }
-        resolve();
-      }, this.electionTimeout);
+      const timer = setTimeout(() => finish(true), this.electionTimeout);
     });
   }
 
@@ -286,6 +305,7 @@ export class TabCoordinator implements Disposable {
 
   [Symbol.dispose](): void {
     this.disposed = true;
+    this.electionAbort = null;
     if (this._isLeader) {
       this.abdicate();
     }

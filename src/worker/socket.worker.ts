@@ -28,6 +28,7 @@ interface WorkerCommand {
   reconnectMaxRetries?: number;
   authFailureCloseCodes?: number[];
   heartbeatInterval?: number;
+  heartbeatTimeout?: number;
   bufferSize?: number;
 }
 
@@ -45,6 +46,8 @@ let maxDelay = 30_000;
 let maxRetries = Infinity;
 let authFailureCloseCodes: Set<number> = new Set([1008]);
 let heartbeatInterval = 30_000;
+let heartbeatTimeout = 0;
+let lastInboundAt = 0;
 let maxBuffer = 100;
 
 // Backoff state
@@ -83,12 +86,14 @@ function doConnect() {
     setState('connected');
     backoffDelay = 1000;
     reconnectAttempts = 0;
+    lastInboundAt = Date.now();
     self.postMessage({ type: 'open' });
     flushBuffer();
     startHeartbeat();
   };
 
   ws.onmessage = (ev: MessageEvent) => {
+    lastInboundAt = Date.now();
     let data: unknown;
     try {
       data = JSON.parse(ev.data as string);
@@ -158,6 +163,11 @@ function flushBuffer() {
 function startHeartbeat() {
   stopHeartbeat();
   heartbeatTimer = setInterval(() => {
+    // Liveness watchdog — reconnect if nothing inbound within the window.
+    if (heartbeatTimeout > 0 && state === 'connected' && Date.now() - lastInboundAt > heartbeatTimeout) {
+      manualReconnect();
+      return;
+    }
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'ping' }));
     }
@@ -228,6 +238,7 @@ self.onmessage = (ev: MessageEvent<WorkerCommand>) => {
       if (cmd.reconnectMaxRetries !== undefined) maxRetries = cmd.reconnectMaxRetries;
       if (cmd.authFailureCloseCodes) authFailureCloseCodes = new Set(cmd.authFailureCloseCodes);
       if (cmd.heartbeatInterval) heartbeatInterval = cmd.heartbeatInterval;
+      if (cmd.heartbeatTimeout) heartbeatTimeout = cmd.heartbeatTimeout;
       if (cmd.bufferSize) maxBuffer = cmd.bufferSize;
       connect(cmd.url!, cmd.protocols ?? []);
       break;

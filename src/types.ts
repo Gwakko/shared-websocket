@@ -109,6 +109,15 @@ export interface SharedWebSocketOptions<TEvents extends EventMap = EventMap> {
    */
   authFailureCloseCodes?: number[];
   heartbeatInterval?: number;
+  /**
+   * Liveness watchdog (ms). When `> 0`, the leader force-reconnects if no
+   * inbound message (server data or a pong) arrives within this window —
+   * catching silently-dropped connections that never fire `onclose` (sleep,
+   * network switch, captive portal). Requires the server to send periodic
+   * data or answer the heartbeat ping; set it comfortably above
+   * `heartbeatInterval` (e.g. 2–3×). Default: disabled.
+   */
+  heartbeatTimeout?: number;
   electionTimeout?: number;
   leaderHeartbeat?: number;
   leaderTimeout?: number;

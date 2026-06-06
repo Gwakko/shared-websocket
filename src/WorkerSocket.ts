@@ -33,6 +33,7 @@ export class WorkerSocket implements Disposable {
       reconnectMaxRetries?: number;
       authFailureCloseCodes?: number[];
       heartbeatInterval?: number;
+      heartbeatTimeout?: number;
       sendBuffer?: number;
       workerUrl?: string | URL;
       auth?: () => string | Promise<string>;
@@ -114,6 +115,7 @@ export class WorkerSocket implements Disposable {
       reconnectMaxRetries: this.options.reconnectMaxRetries ?? Infinity,
       authFailureCloseCodes: this.options.authFailureCloseCodes ?? [1008],
       heartbeatInterval: this.options.heartbeatInterval ?? 30_000,
+      heartbeatTimeout: this.options.heartbeatTimeout ?? 0,
       bufferSize: this.options.sendBuffer ?? 100,
       pingPayload: this.options.pingPayload,
     });
@@ -162,7 +164,7 @@ export class WorkerSocket implements Disposable {
       let ws = null, state = 'closed', buffer = [], disposed = false;
       let heartbeatTimer = null, reconnectTimer = null;
       let url = '', protocols = [], shouldReconnect = true;
-      let maxDelay = 30000, maxRetries = Infinity, hbInterval = 30000, maxBuf = 100;
+      let maxDelay = 30000, maxRetries = Infinity, hbInterval = 30000, hbTimeout = 0, lastInbound = 0, maxBuf = 100;
       let authFailCodes = new Set([1008]);
       let delay = 1000, attempts = 0, pingPayload = '{"type":"ping"}';
 
@@ -171,8 +173,8 @@ export class WorkerSocket implements Disposable {
         if (disposed) return;
         setState('connecting');
         ws = new WebSocket(url, protocols);
-        ws.onopen = () => { attempts = 0; delay = 1000; setState('connected'); self.postMessage({ type: 'open' }); flush(); startHB(); };
-        ws.onmessage = (e) => { let d; try { d = JSON.parse(e.data); } catch { d = e.data; } self.postMessage({ type: 'message', data: d }); };
+        ws.onopen = () => { attempts = 0; delay = 1000; lastInbound = Date.now(); setState('connected'); self.postMessage({ type: 'open' }); flush(); startHB(); };
+        ws.onmessage = (e) => { lastInbound = Date.now(); let d; try { d = JSON.parse(e.data); } catch { d = e.data; } self.postMessage({ type: 'message', data: d }); };
         ws.onclose = (e) => {
           stopHB();
           self.postMessage({ type: 'close', code: e.code, reason: e.reason });
@@ -183,7 +185,7 @@ export class WorkerSocket implements Disposable {
       }
       function send(d) { if (state === 'connected' && ws?.readyState === 1) ws.send(JSON.stringify(d)); else if (buffer.length < maxBuf) buffer.push(d); }
       function flush() { const p = buffer.splice(0); p.forEach(send); }
-      function startHB() { stopHB(); heartbeatTimer = setInterval(() => { if (ws?.readyState === 1) ws.send(pingPayload); }, hbInterval); }
+      function startHB() { stopHB(); heartbeatTimer = setInterval(() => { if (hbTimeout > 0 && state === 'connected' && Date.now() - lastInbound > hbTimeout) { manualReconnect(); return; } if (ws?.readyState === 1) ws.send(pingPayload); }, hbInterval); }
       function stopHB() { if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; } }
       function reconnect() {
         attempts++;
@@ -202,7 +204,7 @@ export class WorkerSocket implements Disposable {
       }
       self.onmessage = (e) => {
         const c = e.data;
-        if (c.type === 'connect') { url = c.url; protocols = c.protocols || []; shouldReconnect = c.reconnect ?? true; maxDelay = c.reconnectMaxDelay || 30000; maxRetries = c.reconnectMaxRetries ?? Infinity; if (c.authFailureCloseCodes) authFailCodes = new Set(c.authFailureCloseCodes); hbInterval = c.heartbeatInterval || 30000; maxBuf = c.bufferSize || 100; if (c.pingPayload) pingPayload = JSON.stringify(c.pingPayload); connect(); }
+        if (c.type === 'connect') { url = c.url; protocols = c.protocols || []; shouldReconnect = c.reconnect ?? true; maxDelay = c.reconnectMaxDelay || 30000; maxRetries = c.reconnectMaxRetries ?? Infinity; if (c.authFailureCloseCodes) authFailCodes = new Set(c.authFailureCloseCodes); hbInterval = c.heartbeatInterval || 30000; hbTimeout = c.heartbeatTimeout || 0; maxBuf = c.bufferSize || 100; if (c.pingPayload) pingPayload = JSON.stringify(c.pingPayload); connect(); }
         if (c.type === 'send') send(c.data);
         if (c.type === 'reconnect') manualReconnect();
         if (c.type === 'disconnect') { disposed = true; stopHB(); if (reconnectTimer) clearTimeout(reconnectTimer); if (ws) { ws.onclose = null; if (ws.readyState < 2) ws.close(1000); ws = null; } buffer = []; setState('closed'); }

@@ -52,6 +52,7 @@ Callback receives `{ ws, signal }` — destructure what you need. Signal aborts 
 | `reconnectMaxDelay` | `number` | `30000` | Max reconnect backoff (ms) |
 | `reconnectMaxRetries` | `number` | `Infinity` | Max attempts before giving up |
 | `heartbeatInterval` | `number` | `30000` | Ping interval (ms) |
+| `heartbeatTimeout` | `number` | `0` (off) | Reconnect if no inbound message arrives within this window (ms); detects silently-dead sockets |
 | `sendBuffer` | `number` | `100` | Max buffered messages during reconnect |
 | `auth` | `() => string` | — | Token provider callback (called on each connect) |
 | `authToken` | `string` | — | Static token (alternative to `auth` callback) |

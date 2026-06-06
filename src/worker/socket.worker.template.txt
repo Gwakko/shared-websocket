@@ -67,6 +67,7 @@ interface WorkerCommand {
   reconnect?: boolean;
   reconnectMaxDelay?: number;
   heartbeatInterval?: number;
+  heartbeatTimeout?: number;
   bufferSize?: number;
   pingPayload?: unknown;
 }
@@ -83,6 +84,8 @@ let currentProtocols: string[] = [];
 let shouldReconnect = true;
 let maxDelay = 30_000;
 let heartbeatInterval = 30_000;
+let heartbeatTimeout = 0;
+let lastInboundAt = 0;
 let maxBuffer = 100;
 let pingPayload: unknown = { type: 'ping' };
 let backoffDelay = 1000;
@@ -110,12 +113,14 @@ function connect() {
   ws.onopen = () => {
     setState('connected');
     backoffDelay = 1000;
+    lastInboundAt = Date.now();
     self.postMessage({ type: 'open' });
     flushBuffer();
     startHeartbeat();
   };
 
   ws.onmessage = (ev: MessageEvent) => {
+    lastInboundAt = Date.now();
     let data: unknown;
     try {
       data = deserialize(ev.data);
@@ -174,6 +179,12 @@ function flushBuffer() {
 function startHeartbeat() {
   stopHeartbeat();
   heartbeatTimer = setInterval(() => {
+    // Liveness watchdog — if nothing inbound within the window, the socket is
+    // silently dead; close it so onclose schedules a reconnect.
+    if (heartbeatTimeout > 0 && state === 'connected' && Date.now() - lastInboundAt > heartbeatTimeout) {
+      if (ws) ws.close(4000, 'heartbeat timeout');
+      return;
+    }
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(serialize(pingPayload));
     }
@@ -206,6 +217,7 @@ self.onmessage = (ev: MessageEvent<WorkerCommand>) => {
       if (cmd.reconnect !== undefined) shouldReconnect = cmd.reconnect;
       if (cmd.reconnectMaxDelay) maxDelay = cmd.reconnectMaxDelay;
       if (cmd.heartbeatInterval) heartbeatInterval = cmd.heartbeatInterval;
+      if (cmd.heartbeatTimeout) heartbeatTimeout = cmd.heartbeatTimeout;
       if (cmd.bufferSize) maxBuffer = cmd.bufferSize;
       if (cmd.pingPayload !== undefined) pingPayload = cmd.pingPayload;
       connect();
