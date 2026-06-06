@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   split-brain tie-break, health-verified takeover, the `heartbeatTimeout`
   liveness watchdog, the leader-local `request()` path, and the
   outbox/handover machinery (follower→leader routing, subscription replay on
-  promotion, pending-event replay, and no-duplicate-after-flush). Run with
-  `npm test`.
+  promotion, pending-event replay, and no-duplicate-after-flush),
+  visibility-driven takeover (and the `recoverOnActivate` opt-out), and the
+  `ws:request` responder teardown on demotion. Run with `npm test`.
 
 ### Added
 
