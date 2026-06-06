@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   those paths independently testable. No behavior or API change — the full suite
   passes unchanged.
 
+- **DOM listeners now use an `AbortController`.** The `document`
+  (`visibilitychange`) and `window` (`pagehide`/`pageshow`) listeners are
+  registered with a shared `{ signal }` and removed in one `abort()` on
+  dispose, instead of a manual `removeEventListener` per listener.
+
 - **Centralized magic values in `src/constants.ts`.** All internal
   `BroadcastChannel` topic names (`coord:*`, `ws:*`), `SubscriptionManager`
   lifecycle keys (`$lifecycle:*`), the auth-token sync key, the bus channel

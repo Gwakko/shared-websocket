@@ -6,14 +6,18 @@ import { MockWebSocket } from './mocks/websocket';
 function makeWindowMock() {
   const listeners: Record<string, Set<(e: unknown) => void>> = {};
   return {
-    addEventListener(type: string, fn: (e: unknown) => void) {
+    addEventListener(type: string, fn: (e: unknown) => void, opts?: { signal?: AbortSignal }) {
       (listeners[type] ??= new Set()).add(fn);
+      opts?.signal?.addEventListener('abort', () => listeners[type]?.delete(fn));
     },
     removeEventListener(type: string, fn: (e: unknown) => void) {
       listeners[type]?.delete(fn);
     },
     dispatch(type: string, event: unknown) {
       listeners[type]?.forEach((fn) => fn(event));
+    },
+    count(type: string) {
+      return listeners[type]?.size ?? 0;
     },
   };
 }
@@ -84,5 +88,17 @@ describe('page lifecycle (pagehide / pageshow)', () => {
     win().dispatch('pagehide', { persisted: false }); // real navigation/close
 
     expect(sock.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it('removes its window listeners on dispose (AbortController)', async () => {
+    const ws = new SharedWebSocket('wss://x', { electionTimeout: 50 });
+    await connect(ws);
+    expect(win().count('pagehide')).toBe(1);
+    expect(win().count('pageshow')).toBe(1);
+
+    ws.disconnect();
+
+    expect(win().count('pagehide')).toBe(0);
+    expect(win().count('pageshow')).toBe(0);
   });
 });

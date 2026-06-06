@@ -75,6 +75,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private syncStore = new Map<string, unknown>();
   private tabId: string;
   private cleanups: Unsubscribe[] = [];
+  /** Removes all DOM (document/window) listeners at once on dispose. */
+  private readonly domListeners = new AbortController();
   private disposed = false;
   private readonly proto: EventProtocol;
   private readonly log: Logger;
@@ -284,8 +286,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
           }
         }
       };
-      document.addEventListener('visibilitychange', onVisibilityChange);
-      this.cleanups.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+      document.addEventListener('visibilitychange', onVisibilityChange, { signal: this.domListeners.signal });
     }
 
     // Cleanup on tab close. Use `pagehide` rather than `beforeunload`:
@@ -311,12 +312,9 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
           void this.coordinator.elect();
         }
       };
-      window.addEventListener('pagehide', onPageHide);
-      window.addEventListener('pageshow', onPageShow);
-      this.cleanups.push(() => {
-        window.removeEventListener('pagehide', onPageHide);
-        window.removeEventListener('pageshow', onPageShow);
-      });
+      const signal = this.domListeners.signal;
+      window.addEventListener('pagehide', onPageHide, { signal });
+      window.addEventListener('pageshow', onPageShow, { signal });
     }
   }
 
@@ -1123,6 +1121,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   [Symbol.dispose](): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.domListeners.abort(); // removes document/window listeners
     this.requestResponderCleanup?.();
     this.requestResponderCleanup = null;
 

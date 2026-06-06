@@ -13,8 +13,9 @@ function makeDocMock() {
   const listeners: Record<string, Set<() => void>> = {};
   return {
     hidden: true,
-    addEventListener(type: string, fn: () => void) {
+    addEventListener(type: string, fn: () => void, opts?: { signal?: AbortSignal }) {
       (listeners[type] ??= new Set()).add(fn);
+      opts?.signal?.addEventListener('abort', () => listeners[type]?.delete(fn));
     },
     removeEventListener(type: string, fn: () => void) {
       listeners[type]?.delete(fn);
