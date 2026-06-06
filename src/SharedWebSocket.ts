@@ -5,6 +5,8 @@ import { TabCoordinator } from './TabCoordinator';
 import { SharedSocket } from './SharedSocket';
 import { WorkerSocket } from './WorkerSocket';
 import { SubscriptionManager } from './SubscriptionManager';
+import { FramePipeline } from './FramePipeline';
+import { Outbox } from './Outbox';
 import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol, EventMap, Logger, Middleware, FrameKind, FramePayload, ChannelAckResult } from './types';
 
 const DEFAULT_PROTOCOL: EventProtocol = {
@@ -73,7 +75,10 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private disposed = false;
   private readonly proto: EventProtocol;
   private readonly log: Logger;
-  private outgoingMiddleware: Middleware[] = [];
+  /** Outgoing frame building + middleware + socket write. */
+  private readonly framePipeline: FramePipeline;
+  /** At-least-once buffer + replay for follower-originated dispatches. */
+  private readonly outbox: Outbox;
   private incomingMiddleware: Middleware[] = [];
   private serializers = new Map<string, (data: unknown) => unknown>();
   private deserializers = new Map<string, (data: unknown) => unknown>();
@@ -91,14 +96,6 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private topics = new Set<string>();
   /** Listeners for every raw incoming frame (post-deserialize, post-middleware). */
   private rawFrameListeners = new Set<(raw: unknown) => void>();
-  /**
-   * Local outbound buffer of follower-originated dispatches awaiting flush
-   * confirmation from the leader. Drained when the leader broadcasts
-   * `ws:dispatch-flushed` for the entry's id; replayed by the next leader
-   * after gathering across surviving tabs. Insertion order preserved
-   * (Map) so we drop oldest on overflow.
-   */
-  private pendingOutbound = new Map<string, { id: string; kind: FrameKind; payload: FramePayload; enqueuedAt: number }>();
   /** Periodic refresh timer — leader only. Recreated on each leader handover. */
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   /**
@@ -124,6 +121,16 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       leaderTimeout: options.leaderTimeout,
       leaderPingTimeout: options.leaderPingTimeout,
     });
+
+    // Outgoing pipeline + outbox. The outbox replays via the pipeline's
+    // transmit, which writes to whatever socket the pipeline currently holds.
+    this.framePipeline = new FramePipeline(this.proto, this.log);
+    this.outbox = new Outbox(
+      this.bus,
+      options.outboundBufferSize ?? 100,
+      (kind, payload) => this.framePipeline.transmit(kind, payload),
+      this.log,
+    );
 
     // Let the coordinator decide leader health from real socket state — a
     // backgrounded leader with a dead socket fails this check and is taken
@@ -172,7 +179,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.cleanups.push(
       this.bus.subscribe<{ kind: FrameKind; payload: FramePayload; id?: string }>('ws:dispatch', (msg) => {
         if (this.coordinator.isLeader && this.socket) {
-          this.transmit(msg.kind, msg.payload);
+          this.framePipeline.transmit(msg.kind, msg.payload);
           // Tell the originator to drop the entry from its pending buffer.
           // Always flush — even when transmit was a no-op (middleware drop,
           // frameBuilder returned null) — there's no point retrying a
@@ -181,25 +188,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         }
       }),
     );
-
-    // Originator tabs drop their entry once the leader confirms it processed
-    // the dispatch (or, on leader change, the new leader confirms replay).
-    this.cleanups.push(
-      this.bus.subscribe<{ id: string }>('ws:dispatch-flushed', (msg) => {
-        this.pendingOutbound.delete(msg.id);
-      }),
-    );
-
-    // New-leader gather request — every tab announces its still-pending
-    // dispatches so the new leader can replay them on the fresh socket.
-    this.cleanups.push(
-      this.bus.subscribe<{ replyId: string }>('ws:gather-pending', (req) => {
-        if (this.pendingOutbound.size === 0) return;
-        this.bus.publish(`ws:pending:${req.replyId}`, {
-          entries: [...this.pendingOutbound.values()],
-        });
-      }),
-    );
+    // The originator-side flush handler and pending-gather responder live in
+    // Outbox (it owns the buffer those operate on).
 
     // Leader listens for reconnect requests from followers
     this.cleanups.push(
@@ -520,7 +510,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    */
   use(direction: 'outgoing' | 'incoming', fn: Middleware): this {
     if (direction === 'outgoing') {
-      this.outgoingMiddleware.push(fn);
+      this.framePipeline.use(fn);
     } else {
       this.incomingMiddleware.push(fn);
     }
@@ -697,7 +687,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         () => finish(() => reject(new Error(`SharedWebSocket.request: timeout for "${event}"`))),
         timeout,
       );
-      this.transmit('event', { event, data });
+      this.framePipeline.transmit('event', { event, data });
     });
   }
 
@@ -997,22 +987,6 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   // defaultFrameBuilder (legacy two-key { event, data } envelope).
 
   /**
-   * Build the wire frame for a given kind. Honors custom `frameBuilder`.
-   * Return-value contract:
-   *   - any concrete value → use as the frame
-   *   - `null`             → drop the frame (intentional filter)
-   *   - `undefined`        → fall back to the default builder for this kind
-   */
-  private buildFrame(kind: FrameKind, payload: FramePayload): unknown {
-    if (this.proto.frameBuilder) {
-      const result = this.proto.frameBuilder(kind, payload);
-      if (result !== undefined) return result;
-      // undefined → fall through to default for this kind
-    }
-    return this.defaultFrameBuilder(kind, payload);
-  }
-
-  /**
    * Subscribe to every raw incoming frame (post-deserialize). Used by
    * `Channel.ready`'s ack matcher. Internal — not part of the public API.
    */
@@ -1021,122 +995,17 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     return () => { this.rawFrameListeners.delete(fn); };
   }
 
-  /** Legacy two-key builder — preserved as the default for back-compat. */
-  private defaultFrameBuilder(kind: FrameKind, p: FramePayload): unknown {
-    let eventName: string;
-    let dataPart: unknown;
-
-    switch (kind) {
-      case 'event':
-        // Channel-scoped events join with `:` for wire compat (Pusher convention).
-        eventName = p.channel ? `${p.channel}:${p.event ?? ''}` : (p.event ?? this.proto.defaultEvent);
-        dataPart = p.data;
-        break;
-      case 'subscribe':
-        eventName = this.proto.channelJoin;
-        dataPart = { channel: p.channel };
-        break;
-      case 'unsubscribe':
-        eventName = this.proto.channelLeave;
-        dataPart = { channel: p.channel };
-        break;
-      case 'topic-subscribe':
-        eventName = this.proto.topicSubscribe;
-        dataPart = { topic: p.topic };
-        break;
-      case 'topic-unsubscribe':
-        eventName = this.proto.topicUnsubscribe;
-        dataPart = { topic: p.topic };
-        break;
-      case 'auth-login':
-        eventName = this.proto.authLogin;
-        dataPart = { token: p.data };
-        break;
-      case 'auth-logout':
-        eventName = this.proto.authLogout;
-        dataPart = {};
-        break;
-    }
-
-    return {
-      ...(p.extras ?? {}),
-      [this.proto.eventField]: eventName,
-      [this.proto.dataField]: dataPart,
-    };
-  }
-
-  /** Route a structured frame: leader transmits, followers forward via bus. */
+  /**
+   * Route a structured frame: the leader transmits directly via the frame
+   * pipeline; followers hand it to the outbox, which buffers (event kinds) and
+   * forwards over the bus for the leader to write.
+   */
   private dispatch(kind: FrameKind, payload: FramePayload): void {
     if (this.coordinator.isLeader && this.socket) {
-      this.transmit(kind, payload);
+      this.framePipeline.transmit(kind, payload);
       return;
     }
-    // Follower path — route to the leader's socket via the bus.
-    const id = generateId();
-    // Only `event` dispatches need the local replay buffer. Channel /
-    // topic / auth frames are already tracked (channelRefs, topicRefs,
-    // the auth token) and re-sent by resubscribeOnConnect() on the next
-    // connect — buffering them here too makes onConnected() replay them
-    // twice, emitting a duplicate subscribe frame.
-    if (kind === 'event') {
-      this.enqueuePending(id, kind, payload);
-    }
-    this.bus.publish('ws:dispatch', { id, kind, payload });
-  }
-
-  private enqueuePending(id: string, kind: FrameKind, payload: FramePayload): void {
-    const max = this.options.outboundBufferSize ?? 100;
-    if (max <= 0) return;
-    if (this.pendingOutbound.size >= max) {
-      // Drop oldest — Map iteration order = insertion order.
-      const oldestKey = this.pendingOutbound.keys().next().value;
-      if (oldestKey !== undefined) this.pendingOutbound.delete(oldestKey);
-    }
-    this.pendingOutbound.set(id, { id, kind, payload, enqueuedAt: Date.now() });
-  }
-
-  /** Build, run middleware, and write to the socket. Leader-only. */
-  private transmit(kind: FrameKind, payload: FramePayload): void {
-    if (!this.socket) return;
-    let frame: unknown = this.buildFrame(kind, payload);
-    if (frame === null) {
-      this.log.debug('[SharedWS] ✗ frameBuilder dropped frame', kind, this.frameLabel(kind, payload));
-      return;
-    }
-    for (const mw of this.outgoingMiddleware) {
-      frame = mw(frame);
-      if (frame === null) {
-        this.log.debug('[SharedWS] ✗ outgoing dropped by middleware', kind, this.frameLabel(kind, payload));
-        return;
-      }
-    }
-    // Auth frames carry a token — never log payload or wire frame.
-    if (kind === 'auth-login') {
-      this.log.debug('[SharedWS] → send', kind, '(token redacted)');
-    } else {
-      this.log.debug('[SharedWS] → send', kind, this.frameLabel(kind, payload), { payload, frame });
-    }
-    this.socket.send(frame);
-  }
-
-  /**
-   * Human-readable headline for log lines — picks the most relevant field
-   * out of the structured payload so log scanners aren't reading objects:
-   *   - event       → event name
-   *   - subscribe   → channel
-   *   - topic-*     → topic
-   *   - auth-*      → '(redacted)' / ''
-   */
-  private frameLabel(kind: FrameKind, p: FramePayload): string {
-    switch (kind) {
-      case 'event':              return p.event ?? '?';
-      case 'subscribe':
-      case 'unsubscribe':        return p.channel ?? '?';
-      case 'topic-subscribe':
-      case 'topic-unsubscribe':  return p.topic ?? '?';
-      case 'auth-login':         return '(redacted)';
-      case 'auth-logout':        return '';
-    }
+    this.outbox.route(kind, payload);
   }
 
   private createSocket(): SocketAdapter {
@@ -1177,6 +1046,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private handleBecomeLeader(): void {
     this.log.info('[SharedWS] 👑 became leader');
     this.socket = this.createSocket();
+    this.framePipeline.setSocket(this.socket);
     this.startRefreshTimer();
 
     this.socket.onMessage((raw: unknown) => {
@@ -1257,7 +1127,10 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    */
   private async onConnected(): Promise<void> {
     await this.resubscribeOnConnect();
-    await this.replayPendingDispatches();
+    // Drain follower-pending dispatches that didn't reach the previous leader.
+    // Bail if leadership/socket changed again while the outbox was gathering.
+    const socket = this.socket;
+    await this.outbox.replay(() => this.socket === socket);
   }
 
   private async resubscribeOnConnect(): Promise<void> {
@@ -1268,7 +1141,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     if (this._isAuthenticated) {
       const token = this.syncStore.get('$auth:token') as string | undefined;
       if (token) {
-        this.transmit('auth-login', { data: token });
+        this.framePipeline.transmit('auth-login', { data: token });
         this.log.debug('[SharedWS] re-authenticated after reconnect');
       }
     }
@@ -1278,10 +1151,10 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     if (this.socket !== socket) return; // socket replaced while we were waiting
 
     for (const name of channels) {
-      this.transmit('subscribe', { channel: name });
+      this.framePipeline.transmit('subscribe', { channel: name });
     }
     for (const topic of topics) {
-      this.transmit('topic-subscribe', { topic });
+      this.framePipeline.transmit('topic-subscribe', { topic });
     }
 
     if (channels.length || topics.length) {
@@ -1290,60 +1163,6 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         topics: topics.length,
       });
     }
-  }
-
-  /**
-   * Replay buffered follower dispatches over the freshly connected socket.
-   * Gathers from all tabs (including this one), de-dups by id, transmits,
-   * then signals each originator to drop its local entry. Drops own-tab
-   * entries after transmission since `bus.publish` doesn't echo to self.
-   */
-  private async replayPendingDispatches(): Promise<void> {
-    if (!this.socket) return;
-    const socket = this.socket;
-    const entries = await this.gatherPendingDispatches();
-    if (this.socket !== socket) return; // socket replaced while waiting
-    if (entries.length === 0) return;
-
-    let sent = 0;
-    for (const e of entries) {
-      this.transmit(e.kind, e.payload);
-      // Remove from own pending (publish doesn't echo to self) and tell
-      // any other tab that originated the same id to drop it as well.
-      this.pendingOutbound.delete(e.id);
-      this.bus.publish('ws:dispatch-flushed', { id: e.id });
-      sent++;
-    }
-    this.log.info('[SharedWS] replayed pending dispatches', { count: sent });
-  }
-
-  /**
-   * Cross-tab pending-dispatch gather. Same shape as `gatherSubscriptions`
-   * — broadcasts a one-shot request, collects for a short window, dedups
-   * by id (so multiple tabs holding the same id don't double-replay).
-   */
-  private gatherPendingDispatches(timeoutMs = 100): Promise<Array<{ id: string; kind: FrameKind; payload: FramePayload }>> {
-    const seen = new Map<string, { id: string; kind: FrameKind; payload: FramePayload }>();
-    for (const e of this.pendingOutbound.values()) {
-      seen.set(e.id, { id: e.id, kind: e.kind, payload: e.payload });
-    }
-    const replyId = generateId();
-
-    return new Promise((resolve) => {
-      const unsub = this.bus.subscribe<{ entries: Array<{ id: string; kind: FrameKind; payload: FramePayload; enqueuedAt: number }> }>(
-        `ws:pending:${replyId}`,
-        (msg) => {
-          for (const e of msg.entries) {
-            if (!seen.has(e.id)) seen.set(e.id, { id: e.id, kind: e.kind, payload: e.payload });
-          }
-        },
-      );
-      this.bus.publish('ws:gather-pending', { replyId });
-      setTimeout(() => {
-        unsub();
-        resolve([...seen.values()]);
-      }, timeoutMs);
-    });
   }
 
   /**
@@ -1383,6 +1202,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       this.socket[Symbol.dispose]();
       this.socket = null;
     }
+    this.framePipeline.setSocket(null);
   }
 
   /**
@@ -1431,6 +1251,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.requestResponderCleanup = null;
 
     this.coordinator[Symbol.dispose]();
+    this.outbox[Symbol.dispose]();
+    this.framePipeline.setSocket(null);
 
     if (this.socket) {
       this.socket[Symbol.dispose]();
@@ -1447,6 +1269,5 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.channelRefs.clear();
     this.topics.clear();
     this.rawFrameListeners.clear();
-    this.pendingOutbound.clear();
   }
 }

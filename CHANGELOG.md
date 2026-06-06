@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **Refactor: extracted `FramePipeline` and `Outbox` from `SharedWebSocket`.**
+  The outgoing path (build frame → middleware → socket write) is now
+  `FramePipeline`; the at-least-once follower-dispatch buffer + cross-tab
+  gather/replay is now `Outbox`. `SharedWebSocket` delegates to both, shrinking
+  the god object and making those paths independently testable. No behavior or
+  API change — the full suite passes unchanged.
+
 - **Test harness.** Added a vitest suite (`test/`) with in-memory
   `BroadcastChannel` and `WebSocket` mocks. Covers leader election, the
   split-brain tie-break, health-verified takeover, the `heartbeatTimeout`
