@@ -8,7 +8,8 @@ import { SubscriptionManager } from './SubscriptionManager';
 import { FramePipeline } from './FramePipeline';
 import { Outbox } from './Outbox';
 import { SubscriptionRegistry } from './SubscriptionRegistry';
-import { BUS, LIFECYCLE, AUTH_TOKEN_KEY, WS_DEFAULTS, MESSAGE_BUS_CHANNEL } from './constants';
+import { AuthManager } from './AuthManager';
+import { BUS, LIFECYCLE, WS_DEFAULTS, MESSAGE_BUS_CHANNEL } from './constants';
 import type { SharedWebSocketOptions, TabRole, Unsubscribe, EventHandler, Channel, EventProtocol, EventMap, Logger, Middleware, FrameKind, FramePayload, ChannelAckResult } from './types';
 
 const DEFAULT_PROTOCOL: EventProtocol = {
@@ -84,19 +85,16 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   private incomingMiddleware: Middleware[] = [];
   private serializers = new Map<string, (data: unknown) => unknown>();
   private deserializers = new Map<string, (data: unknown) => unknown>();
-  private _isAuthenticated = false;
-  private authChannels = new Map<string, Channel>();
-  private authTopics = new Set<string>();
   /**
    * Channel/topic bookkeeping + cross-tab subscription replay. Holds the full
-   * set used for incoming-event routing and leader-handover replay; the
-   * auth-only sets above are tracked separately for auto-leave on deauth.
+   * set used for incoming-event routing and leader-handover replay; auth-scoped
+   * subscriptions are tracked separately by AuthManager for auto-leave on deauth.
    */
   private readonly subscriptions: SubscriptionRegistry;
+  /** Runtime auth: login/logout, token refresh, re-auth on connect, revocation. */
+  private readonly auth: AuthManager;
   /** Listeners for every raw incoming frame (post-deserialize, post-middleware). */
   private rawFrameListeners = new Set<(raw: unknown) => void>();
-  /** Periodic refresh timer — leader only. Recreated on each leader handover. */
-  private refreshTimer: ReturnType<typeof setInterval> | null = null;
   /**
    * Unsubscribe for the leader-only `ws:request` responder. Tracked separately
    * from `cleanups` so it can be torn down on EACH leadership loss — otherwise
@@ -135,6 +133,20 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       (kind, payload) => this.framePipeline.transmit(kind, payload),
       this.log,
     );
+    this.auth = new AuthManager({
+      bus: this.bus,
+      subs: this.subs,
+      syncStore: this.syncStore,
+      isLeader: () => this.coordinator.isLeader,
+      socketState: () => this.socket?.state,
+      reconnect: () => this.reconnect(),
+      dispatch: (kind, payload) => this.dispatch(kind, payload),
+      unsubscribeTopic: (topic) => this.unsubscribe(topic),
+      authRevokedEvent: this.proto.authRevoked,
+      refresh: this.options.refresh ?? this.options.auth,
+      refreshInterval: this.options.refreshTokenInterval,
+      log: this.log,
+    });
 
     // Let the coordinator decide leader health from real socket state — a
     // backgrounded leader with a dead socket fails this check and is taken
@@ -205,19 +217,8 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       }),
     );
 
-    // Conditional resume — only reconnect if the leader's socket gave up
-    // (e.g. auth-failure close code). Sent by authenticate() from followers
-    // so they can recover with fresh creds without disrupting healthy tabs.
-    this.cleanups.push(
-      this.bus.subscribe<void>(BUS.AUTH_RESUME, () => {
-        if (this.coordinator.isLeader && this.socket?.state === 'failed') {
-          this.log.info('[SharedWS] resume requested after auth — reconnecting failed socket');
-          this.socket.reconnect();
-        }
-      }),
-    );
-
-    // (The channels/topics gather responder lives in SubscriptionRegistry.)
+    // (Auth resume + revocation live in AuthManager; channels/topics gather
+    // responder lives in SubscriptionRegistry.)
 
     // Sync across tabs
     this.cleanups.push(
@@ -259,15 +260,9 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
           case 'error':
             this.subs.emit(LIFECYCLE.ERROR, msg.error);
             break;
-          case 'auth': {
-            this._isAuthenticated = !!msg.authenticated;
-            if (!msg.authenticated) {
-              this.authChannels.clear();
-              this.authTopics.clear();
-            }
-            this.subs.emit(LIFECYCLE.AUTH, msg.authenticated);
+          case 'auth':
+            this.auth.applyRemoteAuthState(msg.authenticated);
             break;
-          }
         }
       }),
     );
@@ -288,22 +283,6 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
       this.cleanups.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));
     }
 
-    // Handle server-initiated auth revocation
-    this.cleanups.push(
-      this.subs.on(this.proto.authRevoked, () => {
-        if (this.coordinator.isLeader) {
-          for (const [, ch] of this.authChannels) ch.leave();
-          for (const topic of this.authTopics) this.unsubscribe(topic);
-        }
-        this.authChannels.clear();
-        this.authTopics.clear();
-        this._isAuthenticated = false;
-        this.syncStore.delete(AUTH_TOKEN_KEY);
-        this.subs.emit(LIFECYCLE.AUTH, false);
-        this.log.warn('[SharedWS] auth revoked by server');
-      }),
-    );
-
     // Cleanup on tab close
     if (typeof window !== 'undefined') {
       const onBeforeUnload = () => this[Symbol.dispose]();
@@ -322,7 +301,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
 
   /** Whether the user is authenticated via runtime auth. */
   get isAuthenticated(): boolean {
-    return this._isAuthenticated;
+    return this.auth.isAuthenticated;
   }
 
   /** Whether this tab is currently visible/focused. */
@@ -429,26 +408,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * authenticate(token);
    */
   authenticate(token: string): void {
-    this._isAuthenticated = true;
-    this.syncStore.set(AUTH_TOKEN_KEY, token);
-    this.bus.broadcast(BUS.SYNC, { key: AUTH_TOKEN_KEY, value: token });
-    this.bus.broadcast(BUS.LIFECYCLE, { type: 'auth', authenticated: true });
-    this.log.info('[SharedWS] authenticated');
-
-    // If the leader's socket gave up (e.g. auth-failure close code), the new
-    // creds should restart the connection. resubscribeOnConnect resends
-    // the auth-login frame from syncStore once we're connected again.
-    if (this.coordinator.isLeader && this.socket && this.socket.state === 'failed') {
-      this.reconnect();
-      return;
-    }
-
-    if (!this.coordinator.isLeader) {
-      // Followers can't see leader state — hint to leader to reconnect IFF failed.
-      this.bus.publish(BUS.AUTH_RESUME, undefined);
-    }
-
-    this.dispatch('auth-login', { data: token });
+    this.auth.authenticate(token);
   }
 
   /**
@@ -459,18 +419,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * ws.deauthenticate(); // connection stays open, auth subscriptions cleaned up
    */
   deauthenticate(): void {
-    // Leave auth channels and unsubscribe auth topics
-    for (const [, ch] of this.authChannels) ch.leave();
-    this.authChannels.clear();
-    for (const topic of this.authTopics) this.unsubscribe(topic);
-    this.authTopics.clear();
-
-    this._isAuthenticated = false;
-    this.dispatch('auth-logout', {});
-    this.syncStore.delete(AUTH_TOKEN_KEY);
-    this.bus.broadcast(BUS.SYNC, { key: AUTH_TOKEN_KEY, value: undefined });
-    this.bus.broadcast(BUS.LIFECYCLE, { type: 'auth', authenticated: false });
-    this.log.info('[SharedWS] deauthenticated');
+    this.auth.deauthenticate();
   }
 
   /**
@@ -482,7 +431,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
    * });
    */
   onAuthChange(fn: (authenticated: boolean) => void): Unsubscribe {
-    return this.subs.on(LIFECYCLE.AUTH, fn as EventHandler);
+    return this.auth.onAuthChange(fn);
   }
 
   // ─── Middleware ───────────────────────────────────────
@@ -800,13 +749,13 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
         self.dispatch('unsubscribe', { channel: name });
         for (const unsub of unsubs) unsub();
         unsubs.length = 0;
-        if (isAuth) self.authChannels.delete(name);
+        if (isAuth) self.auth.unregisterAuthChannel(name);
         self.subscriptions.removeChannel(name);
       },
     };
 
     if (isAuth) {
-      this.authChannels.set(name, ch);
+      this.auth.registerAuthChannel(name, ch);
     }
 
     return ch;
@@ -827,7 +776,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.dispatch('topic-subscribe', { topic });
     this.subscriptions.addTopic(topic);
     if (options?.auth) {
-      this.authTopics.add(topic);
+      this.auth.registerAuthTopic(topic);
     }
     this.log.debug('[SharedWS] subscribe topic', topic);
   }
@@ -839,7 +788,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
   unsubscribe(topic: string): void {
     this.dispatch('topic-unsubscribe', { topic });
     this.subscriptions.removeTopic(topic);
-    this.authTopics.delete(topic);
+    this.auth.unregisterAuthTopic(topic);
     this.log.debug('[SharedWS] unsubscribe topic', topic);
   }
 
@@ -1040,7 +989,7 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.log.info('[SharedWS] 👑 became leader');
     this.socket = this.createSocket();
     this.framePipeline.setSocket(this.socket);
-    this.startRefreshTimer();
+    this.auth.startRefresh();
 
     this.socket.onMessage((raw: unknown) => {
       let data: unknown = raw;
@@ -1124,25 +1073,15 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     const stillValid = () => this.socket === socket;
 
     // 1. Re-authenticate first so subsequent auth-channel joins succeed.
-    this.reauthenticate();
+    this.auth.reauthenticate();
     // 2. Replay the union of channels/topics across all surviving tabs.
     await this.subscriptions.replay(stillValid);
     // 3. Drain follower-pending dispatches that didn't reach the old leader.
     await this.outbox.replay(stillValid);
   }
 
-  /** Re-send the auth-login frame from synced state after a fresh connect. */
-  private reauthenticate(): void {
-    if (!this._isAuthenticated) return;
-    const token = this.syncStore.get(AUTH_TOKEN_KEY) as string | undefined;
-    if (token) {
-      this.framePipeline.transmit('auth-login', { data: token });
-      this.log.debug('[SharedWS] re-authenticated after reconnect');
-    }
-  }
-
   private handleLoseLeadership(): void {
-    this.stopRefreshTimer();
+    this.auth.stopRefresh();
     this.requestResponderCleanup?.();
     this.requestResponderCleanup = null;
     if (this.socket) {
@@ -1152,52 +1091,14 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.framePipeline.setSocket(null);
   }
 
-  /**
-   * Start a leader-only periodic refresh of the auth token. The callback
-   * is `options.refresh` (preferred) or `options.auth` (fallback). When
-   * the timer fires and the connection is currently authenticated, the
-   * returned token is fed back through `authenticate()` so subscribers
-   * stay synced and the leader's socket re-issues auth-login.
-   *
-   * Idempotent — calling start while already running is a no-op.
-   */
-  private startRefreshTimer(): void {
-    if (this.refreshTimer) return;
-    const interval = this.options.refreshTokenInterval;
-    const refresh = this.options.refresh ?? this.options.auth;
-    if (!interval || interval <= 0 || !refresh) return;
-    if (!this.coordinator.isLeader) return;
-
-    this.refreshTimer = setInterval(async () => {
-      if (!this.coordinator.isLeader || !this._isAuthenticated) return;
-      try {
-        const token = await refresh();
-        if (!token) {
-          this.log.warn('[SharedWS] refresh() returned empty token — skipping');
-          return;
-        }
-        this.authenticate(token);
-      } catch (err) {
-        this.log.warn('[SharedWS] refresh() failed', err);
-      }
-    }, interval);
-  }
-
-  private stopRefreshTimer(): void {
-    if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
-      this.refreshTimer = null;
-    }
-  }
-
   [Symbol.dispose](): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.stopRefreshTimer();
     this.requestResponderCleanup?.();
     this.requestResponderCleanup = null;
 
     this.coordinator[Symbol.dispose]();
+    this.auth[Symbol.dispose]();
     this.outbox[Symbol.dispose]();
     this.subscriptions[Symbol.dispose]();
     this.framePipeline.setSocket(null);
@@ -1212,8 +1113,6 @@ export class SharedWebSocket<TEvents extends EventMap = EventMap> implements Dis
     this.subs[Symbol.dispose]();
     this.bus[Symbol.dispose]();
     this.syncStore.clear();
-    this.authChannels.clear();
-    this.authTopics.clear();
     this.rawFrameListeners.clear();
   }
 }
